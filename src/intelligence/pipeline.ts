@@ -21,7 +21,6 @@ import type {
   AgentName,
   AgentStep,
   Citation,
-
   PipelineRun,
   PostBlock,
   PostStatus,
@@ -198,7 +197,6 @@ export async function runPipeline(item: RawItem): Promise<PipelineResult> {
       citations,
       status,
     };
-
 
     // An item that has already produced an article is rewritten in place. The
     // alternative is two articles about one event, differing only in wording,

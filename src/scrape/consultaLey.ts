@@ -1,0 +1,476 @@
+// ── Consulta de Leyes (SIL) ──────────────────────────────────────────────────
+// Reads the laws of the Republic from the Asamblea's own search screen.
+//
+// The public page at asamblea.go.cr/.../ConsultaLeyes.aspx is a SharePoint
+// wrapper whose only real content is an iframe. The application inside it is a
+// plain ASP.NET WebForms page, and that is what this file talks to. Going
+// straight to it means the SharePoint chrome, its scripts and its 77 KB of
+// markup never have to be downloaded or parsed.
+//
+// WebForms has no URL for anything: every action is a POST of the whole form
+// back to the same address, carrying an opaque __VIEWSTATE that encodes what
+// the server currently believes is on screen. So a lookup is a short
+// conversation, and each reply must be fed into the next request:
+//
+//   GET                                   → the empty form
+//   POST btnBuscar + tbxBuscaLey=10964    → a grid holding that one law
+//   POST __EVENTTARGET=grvLey Select$0    → the detail panels appear
+//   POST btnDescargaTexto                 → the .docx itself
+//
+// Nothing here needs a browser. The page ships no client-side rendering: the
+// grid and the detail tables are in the HTML the server sends.
+
+import { config } from "../config.ts";
+import type { LawAffectation } from "../types.ts";
+
+/** The WebForms application, inside the iframe of the public SharePoint page. */
+const FORM_URL = "https://consultassil3.asamblea.go.cr/frmConsultaLey.aspx";
+
+/** Where a reader should be sent to check a law: the page a person can use. */
+export const PUBLIC_CONSULTA_URL =
+  "https://www.asamblea.go.cr/Centro_de_informacion/Consultas_SIL/SitePages/ConsultaLeyes.aspx";
+
+const USER_AGENT = "CensoBot/1.0 (+https://elcenso.cr) civic transparency reader";
+const REQUEST_TIMEOUT_MS = 45_000;
+
+// ── Control names ────────────────────────────────────────────────────────────
+// Verified against the live page. They are ASP.NET's generated names, so they
+// are stable as long as the control tree is, and a change here is exactly what
+// should break loudly rather than silently return nothing.
+
+const FIELD_NUMBER = "ctl00$ContentPlaceHolder1$tbxBuscaLey";
+const FIELD_TITLE = "ctl00$ContentPlaceHolder1$tbxBuscaDescripcion";
+const BUTTON_SEARCH = "ctl00$ContentPlaceHolder1$btnBuscar";
+const BUTTON_DOWNLOAD_TEXT = "ctl00$ContentPlaceHolder1$btnDescargaTexto";
+const GRID = "ctl00$ContentPlaceHolder1$grvLey";
+
+/** The message the page prints when a number matches no law. */
+const NOT_FOUND_MESSAGE = "no existe";
+
+/**
+ * asamblea.go.cr serves only its leaf certificate and leaves the GlobalSign
+ * intermediate out of the handshake. Browsers and curl paper over this by
+ * fetching the missing link over AIA; Deno's TLS stack does not, so the
+ * intermediate is committed under certs/ and supplied here. Verification stays
+ * fully on: this adds the one certificate the server forgot to send, rather
+ * than trusting the connection blindly.
+ */
+let httpClient: Deno.HttpClient | null = null;
+
+async function client(): Promise<Deno.HttpClient> {
+  if (httpClient) return httpClient;
+  const url = new URL("../../certs/asamblea-chain.pem", import.meta.url);
+  const caCerts = [await Deno.readTextFile(url)];
+  httpClient = Deno.createHttpClient({ caCerts });
+  return httpClient;
+}
+
+// ── The conversation ─────────────────────────────────────────────────────────
+
+/**
+ * One visit to the page.
+ *
+ * It holds the two things WebForms needs to keep believing it is talking to the
+ * same browser: the session cookie and the current view state. Both are
+ * replaced after every POST, so a session is a moving position in a dialogue,
+ * not a reusable handle. Two lookups must never share one.
+ */
+export interface LeySession {
+  cookie: string;
+  state: Record<string, string>;
+}
+
+/** The hidden inputs that must be echoed back on every postback. */
+const STATE_FIELDS = ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION"];
+
+function readHidden(html: string, name: string): string {
+  const byId = new RegExp(`id="${name}"[^>]*value="([^"]*)"`).exec(html);
+  if (byId) return byId[1];
+  const byName = new RegExp(`name="${name}"[^>]*value="([^"]*)"`).exec(html);
+  return byName ? byName[1] : "";
+}
+
+function readState(html: string): Record<string, string> {
+  const state: Record<string, string> = {};
+  for (const f of STATE_FIELDS) state[f] = readHidden(html, f);
+  return state;
+}
+
+/** Keeps only the cookie pairs, dropping Path/HttpOnly/Expires attributes. */
+function mergeCookies(previous: string, headers: Headers): string {
+  const jar = new Map<string, string>();
+  for (const pair of previous.split("; ")) {
+    const eq = pair.indexOf("=");
+    if (eq > 0) jar.set(pair.slice(0, eq), pair.slice(eq + 1));
+  }
+  for (const raw of headers.getSetCookie()) {
+    const first = raw.split(";")[0];
+    const eq = first.indexOf("=");
+    if (eq > 0) jar.set(first.slice(0, eq).trim(), first.slice(eq + 1));
+  }
+  return [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
+async function request(
+  session: LeySession | null,
+  body: URLSearchParams | null,
+): Promise<{ response: Response; cookie: string }> {
+  const headers: Record<string, string> = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,*/*",
+    "Accept-Language": "es-CR,es;q=0.9",
+  };
+  if (session?.cookie) headers["Cookie"] = session.cookie;
+  if (body) {
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+    headers["Referer"] = FORM_URL;
+    headers["Origin"] = new URL(FORM_URL).origin;
+  }
+
+  const response = await fetch(FORM_URL, {
+    method: body ? "POST" : "GET",
+    headers,
+    body: body ?? undefined,
+    client: await client(),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+
+  return { response, cookie: mergeCookies(session?.cookie ?? "", response.headers) };
+}
+
+/** Opens the form and reads its initial view state. */
+export async function openSession(): Promise<LeySession> {
+  const { response, cookie } = await request(null, null);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`ConsultaLey GET failed: ${response.status}`);
+  }
+  const html = await response.text();
+  return { cookie, state: readState(html) };
+}
+
+/**
+ * Posts the form back and advances the session.
+ *
+ * The search boxes are resent on every postback because WebForms treats the
+ * form as the complete state of the screen: a field left out is a field the
+ * user is telling the server they cleared, which would drop the search and
+ * with it the selected row.
+ */
+async function postBack(
+  session: LeySession,
+  fields: Record<string, string>,
+  lawNumber: string,
+): Promise<{ html: string; bytes: Uint8Array | null; filename: string | null }> {
+  const body = new URLSearchParams();
+  for (const f of STATE_FIELDS) body.set(f, session.state[f] ?? "");
+  body.set("__EVENTTARGET", "");
+  body.set("__EVENTARGUMENT", "");
+  body.set(FIELD_NUMBER, lawNumber);
+  body.set(FIELD_TITLE, "");
+  for (const [k, v] of Object.entries(fields)) body.set(k, v);
+
+  const { response, cookie } = await request(session, body);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`ConsultaLey POST failed: ${response.status}`);
+  }
+  session.cookie = cookie;
+
+  // A file arrives as an attachment; anything else is another render of the page.
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  if (disposition.includes("attachment")) {
+    const filename = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1] ?? null;
+    return {
+      html: "",
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      filename: filename ? decodeURIComponent(filename.trim()) : null,
+    };
+  }
+
+  const html = await response.text();
+  session.state = readState(html);
+  return { html, bytes: null, filename: null };
+}
+
+// ── Reading the HTML ─────────────────────────────────────────────────────────
+
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&([a-zA-Z]+);/g, (whole, name: string) => ENTITIES[name.toLowerCase()] ?? whole);
+}
+
+/** Tag soup to plain text: strip markup, decode entities, collapse whitespace. */
+function cellText(html: string): string {
+  return decodeEntities(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+}
+
+/** Isolates one table by its id, so sibling tables cannot bleed into a parse. */
+function tableById(html: string, id: string): string | null {
+  const open = html.indexOf(`id="${id}"`);
+  if (open < 0) return null;
+  const start = html.lastIndexOf("<table", open);
+  const end = html.indexOf("</table>", open);
+  if (start < 0 || end < 0) return null;
+  return html.slice(start, end + 8);
+}
+
+/** Splits a table into rows of already-cleaned cells. */
+function tableRows(table: string): string[][] {
+  const rows: string[][] = [];
+  for (const [, tr] of table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)) {
+    const cells: string[] = [];
+    for (const [, td] of tr.matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g)) cells.push(cellText(td));
+    if (cells.length) rows.push(cells);
+  }
+  return rows;
+}
+
+/**
+ * Reads a two-column "label, value" panel into a lookup.
+ *
+ * ASP.NET DetailsView renders these as one row per field, which is why the
+ * result is keyed by the label the Asamblea prints rather than by position:
+ * a new field appearing upstream then shifts nothing.
+ */
+function detailPairs(html: string, id: string): Record<string, string> {
+  const table = tableById(html, id);
+  if (!table) return {};
+  const pairs: Record<string, string> = {};
+  for (const row of tableRows(table)) {
+    if (row.length >= 2 && row[0]) pairs[row[0]] = row[1];
+  }
+  return pairs;
+}
+
+/** Normalises a label so accents and case cannot break a lookup. */
+function foldLabel(label: string): string {
+  return label.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+function pick(pairs: Record<string, string>, label: string): string | null {
+  const wanted = foldLabel(label);
+  for (const [k, v] of Object.entries(pairs)) {
+    if (foldLabel(k) === wanted) return v.trim() || null;
+  }
+  return null;
+}
+
+/** Spanish month abbreviations as the SIL prints them, e.g. "24-jun.-2026". */
+const MONTHS: Record<string, string> = {
+  ene: "01",
+  feb: "02",
+  mar: "03",
+  abr: "04",
+  may: "05",
+  jun: "06",
+  jul: "07",
+  ago: "08",
+  set: "09",
+  sep: "09",
+  oct: "10",
+  nov: "11",
+  dic: "12",
+};
+
+/**
+ * Turns "24-jun.-2026" into "2026-06-24".
+ *
+ * Returns null rather than a guess when the shape is unfamiliar: a wrong date
+ * on a law is worse than a missing one, because a reader cannot tell it is wrong.
+ */
+export function parseSilDate(value: string | null): string | null {
+  if (!value) return null;
+  const m = /^(\d{1,2})-([a-zA-Záéíóú]+)\.?-(\d{4})$/.exec(value.trim());
+  if (!m) return null;
+  const month = MONTHS[foldLabel(m[2]).slice(0, 3)];
+  if (!month) return null;
+  return `${m[3]}-${month}-${m[1].padStart(2, "0")}`;
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/** One row of the results grid: the identity of a law, without its detail. */
+export interface LawRow {
+  number: number;
+  title: string;
+}
+
+/** Everything the detail panels say once a row has been selected. */
+export interface LawDetail extends LawRow {
+  inForce: boolean;
+  publishedAt: string | null;
+  gacetaNumber: string | null;
+  alcanceNumber: string | null;
+  emittedAt: string | null;
+  sanctionedAt: string | null;
+  effectiveAt: string | null;
+  expedienteNumber: string | null;
+  expedienteSubject: string | null;
+  procedureType: string | null;
+  affectations: LawAffectation[];
+}
+
+/** Reads the results grid, ignoring its header and pager rows. */
+function parseGrid(html: string): LawRow[] {
+  const table = tableById(html, "ContentPlaceHolder1_grvLey");
+  if (!table) return [];
+  const rows: LawRow[] = [];
+  for (const cells of tableRows(table)) {
+    // Column 0 is the Seleccionar button, 1 the number, 2 the title.
+    if (cells.length < 3) continue;
+    if (!/^\d+$/.test(cells[1])) continue;
+    rows.push({ number: Number(cells[1]), title: cells[2] });
+  }
+  return rows;
+}
+
+function parseAffectations(html: string): LawAffectation[] {
+  const table = tableById(html, "ContentPlaceHolder1_grvAfectaciones");
+  if (!table) return [];
+  const out: LawAffectation[] = [];
+  for (const cells of tableRows(table)) {
+    if (cells.length < 4) continue;
+    if (foldLabel(cells[0]) === "ley afectada") continue; // header
+    out.push({
+      lawNumber: cells[0],
+      affectingArticle: cells[1],
+      affectedLawTitle: cells[2],
+      affectedArticle: cells[3],
+    });
+  }
+  return out;
+}
+
+/** Searches by law number. Returns the matching row, or null when none exists. */
+export async function searchLaw(
+  session: LeySession,
+  number: number,
+): Promise<LawRow | null> {
+  const { html } = await postBack(session, { [BUTTON_SEARCH]: "Buscar" }, String(number));
+  if (decodeEntities(html).toLowerCase().includes(NOT_FOUND_MESSAGE)) return null;
+  return parseGrid(html).find((r) => r.number === number) ?? null;
+}
+
+/**
+ * Presses "Seleccionar" on the first result and reads the panels it reveals.
+ *
+ * Must follow searchLaw on the same session: the row index is meaningful only
+ * against the grid the server last rendered.
+ */
+export async function selectLaw(
+  session: LeySession,
+  row: LawRow,
+): Promise<LawDetail> {
+  const { html } = await postBack(session, {
+    __EVENTTARGET: GRID,
+    __EVENTARGUMENT: "Select$0",
+  }, String(row.number));
+
+  const detail = detailPairs(html, "ContentPlaceHolder1_dvDetalleLey");
+  const project = detailPairs(html, "ContentPlaceHolder1_dvProyectoLey");
+
+  return {
+    ...row,
+    // The Asamblea prints "1" for a law in force and "0" for one repealed.
+    inForce: (pick(detail, "Vigente") ?? "") === "1",
+    publishedAt: parseSilDate(pick(detail, "Fecha de Publicación")),
+    gacetaNumber: pick(detail, "Número de Gaceta"),
+    alcanceNumber: pick(detail, "Número de Alcance"),
+    emittedAt: parseSilDate(pick(detail, "Emitido Asamblea Legislativa")),
+    sanctionedAt: parseSilDate(pick(detail, "Sancionado Poder Ejecutivo")),
+    effectiveAt: parseSilDate(pick(detail, "Rige")),
+    expedienteNumber: pick(project, "Número Expediente Legislativo"),
+    expedienteSubject: pick(project, "Asunto Expediente Legislativo"),
+    procedureType: pick(project, "Descripcion Tipo"),
+    affectations: parseAffectations(html),
+  };
+}
+
+/** A downloaded law text. */
+export interface LawDocument {
+  bytes: Uint8Array;
+  filename: string;
+}
+
+/**
+ * Presses "Descargar" under "Texto de Ley".
+ *
+ * Returns null when the Asamblea has no file for this law. It answers that by
+ * re-rendering the page instead of sending an attachment, which is why the
+ * absence is detected from the response headers rather than from an error.
+ * Callers must treat null as final and stop asking: many older laws have no
+ * digitised text and never will.
+ */
+export async function downloadLawText(
+  session: LeySession,
+  row: LawRow,
+): Promise<LawDocument | null> {
+  const { bytes, filename } = await postBack(
+    session,
+    { [BUTTON_DOWNLOAD_TEXT]: "Descargar" },
+    String(row.number),
+  );
+  if (!bytes || bytes.length === 0) return null;
+  return { bytes, filename: filename ?? `${row.number}.docx` };
+}
+
+/**
+ * The whole conversation for one law, in a fresh session.
+ *
+ * Sessions are not shared between laws on purpose: the view state carries the
+ * selected row, so reusing one would risk downloading the previous law's text
+ * under this law's number.
+ */
+export async function fetchLaw(
+  number: number,
+): Promise<{ detail: LawDetail; document: LawDocument | null } | null> {
+  const session = await openSession();
+  const row = await searchLaw(session, number);
+  if (!row) return null;
+  const detail = await selectLaw(session, row);
+  const document = await downloadLawText(session, row);
+  return { detail, document };
+}
+
+/** Confirms a law number exists, without reading its detail or text. */
+export async function lawExists(number: number): Promise<LawRow | null> {
+  return await searchLaw(await openSession(), number);
+}
+
+/**
+ * Finds the newest law number by walking upward from a known one.
+ *
+ * The Asamblea publishes laws in an unbroken sequence, so the top is the first
+ * number that does not answer. A few misses in a row are required before
+ * stopping, because a number can be reserved slightly before its record
+ * appears, and giving up on the first gap would freeze the catalogue.
+ */
+export async function findCeiling(from: number, tolerance = 3): Promise<number> {
+  let highest = from;
+  let misses = 0;
+  let candidate = from + 1;
+
+  while (misses < tolerance && candidate < from + config.lawCeilingScanLimit) {
+    if (await lawExists(candidate)) {
+      highest = candidate;
+      misses = 0;
+    } else {
+      misses++;
+    }
+    candidate++;
+  }
+
+  return highest;
+}

@@ -9,6 +9,8 @@
     "verify:firestore": "deno run --allow-net --allow-env --allow-read --env-file scripts/verify-firestore.ts",
     "verify:scrape": "deno run --allow-net --allow-env --allow-read --allow-run --allow-sys --env-file scripts/verify-scrape.ts",
     "verify:gaceta": "deno run --allow-net --allow-env --allow-read --allow-run --allow-sys --env-file scripts/verify-gaceta.ts",
+    "verify:leyes": "deno run --allow-net --allow-env --allow-read --allow-sys --env-file scripts/verify-leyes.ts",
+
 
 
     "verify:validator": "deno run --allow-net --allow-env --allow-read --env-file scripts/verify-validator.ts",

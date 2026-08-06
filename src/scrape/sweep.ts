@@ -18,7 +18,6 @@ async function readSource(source: Source, maxItems: number): Promise<NormalizedI
   return rows.map((row) => normalizeRow(source, row));
 }
 
-
 export interface SweepReport {
   sourceId: string;
   created: number;
@@ -48,7 +47,6 @@ export async function sweepSource(source: Source, maxItems = 60): Promise<SweepR
     for (const item of items) {
       // An item with no title and no body carries nothing to explain.
       if (!item.title && !item.body) continue;
-
 
       const { outcome } = await storeRawItem(source.id, item);
       report[outcome]++;

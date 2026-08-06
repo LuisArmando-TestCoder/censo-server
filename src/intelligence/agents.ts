@@ -63,8 +63,7 @@ export function buildExtractorMessages(item: RawItem): Message[] {
       .join("\n")
     : "No hay enlaces.";
 
-  const system =
-    `Usted extrae hechos de publicaciones oficiales del Estado costarricense: la
+  const system = `Usted extrae hechos de publicaciones oficiales del Estado costarricense: la
 Asamblea Legislativa y La Gaceta, el diario oficial.
 Su única tarea es separar lo que el texto dice de lo que no dice.
 

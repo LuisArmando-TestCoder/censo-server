@@ -22,7 +22,6 @@ import type {
   Citation,
   Comment,
   CommentTone,
-
   CommentView,
   Post,
   PostBlock,
@@ -56,7 +55,6 @@ export interface CreatePostInput {
   sourceUrls?: string[];
   citations?: Citation[];
 }
-
 
 export async function createPost(input: CreatePostInput): Promise<Post> {
   const id = randomId(12);
@@ -229,7 +227,6 @@ export async function listComments(postId: string): Promise<Comment[]> {
       screened: r.screened ?? false,
       parentId: r.parentId ?? null,
     }))
-
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 

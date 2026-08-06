@@ -186,7 +186,6 @@ posts.post("/:id/comments", requireAuth, async (c) => {
     parentId = body.parentId;
   }
 
-
   // Read the stored record rather than trusting the token: strikes accumulate
   // after it was issued, so a blocked person still holds a valid session.
   const record = await getUser(user.id);

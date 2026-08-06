@@ -24,7 +24,6 @@ const SEED: Source[] = [
     kind: "sharepoint",
     siteUrl: ASAMBLEA,
 
-
     listTitle: "Noticias",
     selectFields: ["Id", "Title", "Descripcion", "Detalle", "Modified"],
     titleField: "Title",
@@ -99,7 +98,6 @@ const SEED: Source[] = [
     lastError: null,
   },
 ];
-
 
 function normalize(raw: Partial<Source> & { _id?: string }): Source {
   return {

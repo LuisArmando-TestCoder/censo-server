@@ -328,6 +328,197 @@ export interface QuizAnswer {
   answeredAt: string;
 }
 
+// ── Laws passed by the Asamblea Legislativa ──────────────────────────────────
+
+/**
+ * How far a law has travelled through our own pipeline.
+ *
+ *   catalogued  the number and title are known; the text has not been read yet.
+ *   ready       the text was read and the summary written. Fit to show.
+ *   no_text     the Asamblea offers no downloadable text for this number. This
+ *               is terminal on purpose: without it the filler would ask for the
+ *               same missing file every night forever.
+ *   failed      something broke. Retried, unlike no_text.
+ */
+export type LawStatus = "catalogued" | "ready" | "no_text" | "failed";
+
+/** A law this one amends, as the Asamblea's own "Afectaciones" table states it. */
+export interface LawAffectation {
+  /** Number of the law being amended. */
+  lawNumber: string;
+  /** The article of *this* law doing the amending, e.g. "ARTÍCULO ÚNICO". */
+  affectingArticle: string;
+  /** Title of the amended law. */
+  affectedLawTitle: string;
+  /** What happens to it, e.g. "REFORMA ARTÍCULO 45". */
+  affectedArticle: string;
+}
+
+/**
+ * The kind of thing a flag is pointing at.
+ *
+ *   narrow_benefit     the gain lands on a named or very small group, while the
+ *                      title speaks in the language of the general interest.
+ *   hidden_cost        someone carries a cost, a debt or a liability that the
+ *                      title does not mention.
+ *   weakened_control   an audit, a competitive process, a permit or a penalty is
+ *                      removed, softened, or made discretionary.
+ *   unrelated_clause   an article that has nothing to do with the stated subject
+ *                      of the law. The classic vehicle for a favour.
+ *   self_dealing       it benefits the very institution, office or officials who
+ *                      would apply it.
+ *   vague_power        an authority is granted in terms broad enough that its
+ *                      limit is whoever holds it.
+ */
+export type LawFlagKind =
+  | "narrow_benefit"
+  | "hidden_cost"
+  | "weakened_control"
+  | "unrelated_clause"
+  | "self_dealing"
+  | "vague_power";
+
+/**
+ * A clause whose real effect is not what the title of the law advertises.
+ *
+ * This exists because the summary alone is not enough. A law can be described
+ * accurately, article by article, and still leave a reader with no idea that
+ * article 14 quietly exempts one company from a tax everyone else pays. The
+ * summary answers "what does this say"; a flag answers "what should you have
+ * noticed".
+ *
+ * Every flag has to carry `quote`: the words from the law itself. Without it,
+ * this would be the site making an accusation. With it, the site is pointing at
+ * a sentence and letting the reader judge it. That distinction is the whole
+ * reason the field is required rather than optional.
+ */
+export interface LawFlag {
+  kind: LawFlagKind;
+  /** One line, plain language: what is going on here. */
+  title: string;
+  /** Who gains or loses. Concrete, named where the law names them. */
+  who: string;
+  /** Why this is worth a reader's attention, in two or three sentences. */
+  detail: string;
+  /** The article it lives in, e.g. "ARTÍCULO 14". Empty when not pinned down. */
+  article: string;
+  /** The law's own words. Verbatim, so the reader checks rather than trusts. */
+  quote: string;
+  /**
+   * How loud to be. "high" is reserved for a named beneficiary or a removed
+   * control; most real findings are "medium". Kept coarse deliberately: a
+   * five-point scale would invite false precision about a judgement call.
+   */
+  severity: "low" | "medium" | "high";
+}
+
+/**
+ * What the summarising agent produces. Kept as its own interface because the
+ * agent returns exactly this shape and nothing else, which makes the JSON
+ * contract with the model easy to state and easy to check.
+ */
+export interface LawSummary {
+  /** A plain-language name a person would actually say out loud. */
+  headline: string;
+  /** One sentence: what this law does and to whom. */
+  summary: string;
+  /** The full walkthrough in Markdown. Simple words, nothing left out. */
+  explanation: string;
+  /** Concrete groups this law imposes duties, costs or limits on. */
+  affects: string[];
+  /** Concrete groups this law gives money, rights or advantages to. */
+  benefits: string[];
+  /** What changes in practice, one consequence per entry. */
+  implications: string[];
+  /** Clauses that do not match what the law calls itself. Usually empty. */
+  flags: LawFlag[];
+}
+
+/**
+ * A law of the Republic, as published by the Asamblea Legislativa.
+ *
+ * The document id is the law number itself, so "does this law already exist"
+ * is a key lookup rather than a query, and the nightly sweep can skip what it
+ * already holds without scanning the collection.
+ */
+export interface Law {
+  id: string; // the law number as a string, e.g. "10964"
+  number: number;
+
+  /** The title exactly as the Asamblea publishes it, usually in capitals. */
+  officialTitle: string;
+
+  // ── The agent's work. Null until status is "ready". ──
+  headline: string | null;
+  summary: string | null;
+  explanation: string | null;
+  affects: string[];
+  benefits: string[];
+  implications: string[];
+  /**
+   * Clauses that do not match what the law calls itself. Empty on most laws,
+   * and empty on every law catalogued before it was read.
+   */
+  flags: LawFlag[];
+  /** The downloaded text, tidied into Markdown so a reader can compare. */
+  originalMarkdown: string | null;
+
+  // ── Provenance ──
+  /** Where a reader can confirm every word of this for themselves. */
+  sourceUrl: string;
+  /** The file the Asamblea served, e.g. "10964.docx". Null when there is none. */
+  documentName: string | null;
+
+  // ── Official record ("Detalle de la Ley") ──
+  inForce: boolean;
+  publishedAt: string | null;
+  gacetaNumber: string | null;
+  alcanceNumber: string | null;
+  emittedAt: string | null;
+  sanctionedAt: string | null;
+  /** "Rige": the date it starts to apply, which is not always publication. */
+  effectiveAt: string | null;
+
+  // ── The bill it came from ("Proyecto de Ley origen") ──
+  expedienteNumber: string | null;
+  expedienteSubject: string | null;
+  procedureType: string | null;
+
+  /** Laws this one amends. */
+  affectations: LawAffectation[];
+
+  status: LawStatus;
+  /** Why it failed, when it did. Null otherwise. */
+  lastError: string | null;
+
+  likeCount: number;
+  dislikeCount: number;
+
+  /** When we last asked the Asamblea for this law's text. */
+  textCheckedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Where the descending numeric crawl has got to.
+ *
+ * The Asamblea's own listing only pages back about 490 laws, but its search box
+ * answers for every number down to 1. So the catalogue is built by counting
+ * down rather than by paging, and this single document remembers the place.
+ */
+export interface LawCrawlState {
+  id: string; // always "laws"
+  /** Highest law number known to exist. The count starts here and descends. */
+  ceiling: number;
+  /** The next number the descent will ask about. */
+  nextNumber: number;
+  /** True once the descent has reached 1. The seed then never runs again. */
+  complete: boolean;
+  lastRunAt: string | null;
+  lastError: string | null;
+}
+
 // ── Legal / CMS documents ────────────────────────────────────────────────────
 
 export interface LegalDoc {

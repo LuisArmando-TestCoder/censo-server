@@ -13,6 +13,8 @@ export const COL = {
   fieldRegistry: "field_registry",
   quizQuestions: "quiz_questions",
   legalDocs: "legal_docs",
+  laws: "laws",
+  crawlState: "crawl_state",
 } as const;
 
 export const userDoc = (id: string) => `${COL.users}/${id}`;
@@ -35,3 +37,10 @@ export const quizAnswersCol = (userId: string) => `${userDoc(userId)}/quiz_answe
 export const quizAnswerDoc = (userId: string, questionId: string) =>
   `${quizAnswersCol(userId)}/${questionId}`;
 export const legalDoc = (id: string) => `${COL.legalDocs}/${id}`;
+
+// Laws are keyed by their own number, so the path *is* the identity check.
+export const lawDoc = (number: string) => `${COL.laws}/${number}`;
+export const lawReactionsCol = (number: string) => `${lawDoc(number)}/reactions`;
+export const lawReactionDoc = (number: string, userId: string) =>
+  `${lawReactionsCol(number)}/${userId}`;
+export const crawlStateDoc = (id: string) => `${COL.crawlState}/${id}`;

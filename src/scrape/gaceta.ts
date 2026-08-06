@@ -73,7 +73,6 @@ export function editionPdfUrl(pageHtml: string): string | null {
   return m ? `https://www.imprentanacional.go.cr${m[0]}` : null;
 }
 
-
 /**
  * A stable, increasing id for one item: the date followed by its position in the
  * day. Re-reading the same edition yields the same ids, so the drawer store sees
@@ -164,7 +163,6 @@ export async function fetchGacetaItems(
   const url = source.siteUrl.endsWith("/") ? source.siteUrl : `${source.siteUrl}/`;
   const pageHtml = await fetchPage(url);
 
-
   const date = editionDate(pageHtml);
   if (!date) throw new Error("No edition date on the page; the markup changed.");
 
@@ -172,7 +170,6 @@ export async function fetchGacetaItems(
   if (!sections.length) throw new Error("No sections found; the markup changed.");
 
   const editionUrl = editionPdfUrl(pageHtml);
-
 
   const items: NormalizedItem[] = [];
   for (let i = 0; i < sections.length && items.length < maxItems; i++) {

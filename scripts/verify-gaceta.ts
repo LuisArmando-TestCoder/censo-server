@@ -6,7 +6,12 @@
 
 import { getSource, seedSources } from "../src/db/sources.ts";
 import { listRawItemsBySource } from "../src/db/rawItems.ts";
-import { editionDate, editionPdfUrl, fetchGacetaItems, gacetaItemId } from "../src/scrape/gaceta.ts";
+import {
+  editionDate,
+  editionPdfUrl,
+  fetchGacetaItems,
+  gacetaItemId,
+} from "../src/scrape/gaceta.ts";
 import { sweepSource } from "../src/scrape/sweep.ts";
 
 let failures = 0;
@@ -26,7 +31,8 @@ try {
   check("the edition date is read from the markup", editionDate(sample) === "2026-08-06");
   check(
     "the edition PDF resolves to an absolute url",
-    editionPdfUrl(sample) === "https://www.imprentanacional.go.cr/pub/2026/08/06/COMP_06_08_2026.pdf",
+    editionPdfUrl(sample) ===
+      "https://www.imprentanacional.go.cr/pub/2026/08/06/COMP_06_08_2026.pdf",
     editionPdfUrl(sample) ?? "null",
   );
   check(

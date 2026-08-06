@@ -15,6 +15,7 @@ import authRouter from "./src/routes/auth.ts";
 import postsRouter from "./src/routes/posts.ts";
 import quizRouter from "./src/routes/quiz.ts";
 import legalRouter from "./src/routes/legal.ts";
+import lawsRouter from "./src/routes/laws.ts";
 import adminRouter from "./src/routes/admin.ts";
 
 import { seedFields } from "./src/db/fields.ts";
@@ -24,6 +25,7 @@ import { seedLegalDocs } from "./src/db/legal.ts";
 import { sweepAll } from "./src/scrape/sweep.ts";
 import { listPendingRawItems } from "./src/db/rawItems.ts";
 import { runPipeline } from "./src/intelligence/pipeline.ts";
+import { sweepLaws } from "./src/scrape/lawSweep.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -53,6 +55,7 @@ app.route("/api/auth", authRouter);
 app.route("/api/posts", postsRouter);
 app.route("/api/quiz", quizRouter);
 app.route("/api/legal", legalRouter);
+app.route("/api/laws", lawsRouter);
 app.route("/api/admin", adminRouter);
 
 // One shape for every error, with CORS headers set explicitly so the browser
@@ -114,7 +117,38 @@ async function pipelineTick(): Promise<void> {
   }
 }
 
+/**
+ * Keeps the law catalogue current.
+ *
+ * On its own timer, separate from the article pipeline: the two read different
+ * sites at different costs, and a stall in one should not delay the other.
+ */
+async function lawTick(): Promise<void> {
+  try {
+    const r = await sweepLaws();
+    if (r.catalogued || r.summarised || r.withoutText || r.failed) {
+      console.log(
+        `[laws] +${r.catalogued} catalogued, ${r.summarised} explained, ` +
+          `${r.withoutText} without text, ${r.failed} failed` +
+          (r.complete ? " — history complete" : `, next ${r.nextNumber}`),
+      );
+    }
+  } catch (err) {
+    console.error("[laws] tick failed", err);
+  }
+}
+
 await seed();
+
+if (config.lawsEnabled) {
+  const everyMs = config.lawIntervalMin * 60 * 1000;
+  console.log(`laws on, every ${config.lawIntervalMin} min`);
+  // Offset from the article pipeline so the two never start together.
+  setTimeout(lawTick, 25_000);
+  setInterval(lawTick, everyMs);
+} else {
+  console.log("laws off (LAWS_ENABLED is not true). Sweep manually: POST /api/admin/laws/sweep");
+}
 
 if (config.pipelineEnabled) {
   const everyMs = config.scrapeIntervalMin * 60 * 1000;
