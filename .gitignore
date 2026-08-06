@@ -1,0 +1,11 @@
+# Env & secrets
+.env
+.env.local
+service-account.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+node_modules
