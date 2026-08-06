@@ -66,7 +66,13 @@ export const config = {
   lawCeilingScanLimit: int("LAW_CEILING_SCAN_LIMIT", 25),
   // Pause between requests to the Asamblea, in milliseconds.
   lawRequestDelayMs: int("LAW_REQUEST_DELAY_MS", 750),
+  // How much the law pipeline says as it works: "quiet" for nothing but
+  // failures, "normal" for one line per transformation, "verbose" for the
+  // values themselves. Verbose prints law text and model output, so it is for
+  // diagnosing a specific bad law rather than for leaving on.
+  lawLogLevel: (Deno.env.get("LAW_LOG_LEVEL") ?? "normal").toLowerCase(),
   // Shared secret that lets an external scheduler drive the sweep over HTTP,
+
   // for hosts where an in-process timer will not survive. Blank keeps the
   // endpoint closed.
   lawSweepToken: Deno.env.get("LAW_SWEEP_TOKEN") ?? "",

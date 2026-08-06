@@ -38,6 +38,7 @@ import {
 } from "./consultaLey.ts";
 import { docxToText, lawTextToMarkdown, looksLikeDocx } from "../lib/docx.ts";
 import { explainLaw, lawSummaryIssues } from "../intelligence/lawAgent.ts";
+import { bytes as humanBytes, sweepLog, Trace } from "../lib/trace.ts";
 import type { Law } from "../types.ts";
 
 /** A courtesy pause, so a batch does not arrive as a burst. */
@@ -97,7 +98,17 @@ export async function watchTop(): Promise<{ catalogued: number; ceiling: number 
   const state = await getCrawlState();
   const ceiling = await findCeiling(state.ceiling);
 
+  // The ceiling moving is the single most meaningful event in the whole system:
+  // it means the Republic has a new law. It gets its own line even when nothing
+  // else happens this tick.
+  sweepLog(
+    ceiling > state.ceiling
+      ? `techo ${state.ceiling} → ${ceiling}: ${ceiling - state.ceiling} ley(es) nueva(s)`
+      : `techo sin cambios en ${ceiling}`,
+  );
+
   let catalogued = 0;
+
   for (let n = state.ceiling + 1; n <= ceiling; n++) {
     if (await lawIsKnown(n)) continue;
     const row = await lawExists(n);
@@ -197,6 +208,7 @@ export async function summariseLaw(
   number: number,
 ): Promise<"ready" | "no_text" | "failed" | "missing"> {
   const id = String(number);
+  const trace = new Trace(number);
   try {
     const found = await fetchLaw(number);
     if (!found) {
@@ -205,6 +217,7 @@ export async function summariseLaw(
         lastError: "la ley no existe en el SIL",
         textCheckedAt: new Date().toISOString(),
       });
+      trace.done("missing", "no existe en el SIL");
       return "missing";
     }
 
@@ -214,23 +227,67 @@ export async function summariseLaw(
     // Store the official record first. It is worth having even when the text is
     // missing, and it means a later model failure does not cost the fetch.
     await updateLaw(id, { ...detailPatch(detail), textCheckedAt: checkedAt });
+    trace.step(
+      "guardar.detalle",
+      `${Object.keys(detailPatch(detail)).length} campo(s) → Firestore`,
+    );
 
     if (!document || !looksLikeDocx(document.bytes)) {
       await updateLaw(id, {
         status: "no_text",
         lastError: "la Asamblea no publica el texto de esta ley",
       });
+      trace.done("no_text", document ? "el archivo no es un .docx" : "sin archivo");
       return "no_text";
     }
 
+    // The two conversions the reader ultimately sees. Their sizes are logged as
+    // a ratio because that is what exposes a bad extraction: a 365 KB Word file
+    // that yields 200 characters parsed as a document rather than failing as one.
     const text = await docxToText(document.bytes);
+    trace.step(
+      "docx→texto",
+      `${humanBytes(document.bytes.length)} → ${text.length} caracteres, ` +
+        `${text.split("\n").length} línea(s)`,
+    );
+    trace.detail("docx→texto", () => ({ inicio: text.slice(0, 300) }));
+
     if (text.trim().length < 200) {
       await updateLaw(id, { status: "no_text", lastError: "el documento vino vacío" });
+      trace.done("no_text", `sólo ${text.trim().length} caracteres`);
       return "no_text";
     }
 
+    const markdown = lawTextToMarkdown(text);
+    trace.step(
+      "texto→markdown",
+      `${text.length} → ${markdown.length} caracteres, ` +
+        `${(markdown.match(/^#{2,3} /gm) ?? []).length} encabezado(s)`,
+    );
+
+    // The model is the one stage whose output nobody can check by looking at a
+    // size. What it returned is therefore summarised field by field, and shown
+    // in full when verbose, because this is the text that will be published in
+    // our name over a law we did not write.
     const summary = await explainLaw(detail, text);
     const issues = lawSummaryIssues(summary, detail);
+
+    trace.step(
+      "agente",
+      `titular ${summary.headline?.length ?? 0}c, resumen ${summary.summary?.length ?? 0}c, ` +
+        `explicación ${summary.explanation?.length ?? 0}c, ` +
+        `${summary.flags?.length ?? 0} hallazgo(s)` +
+        (issues.length ? ` ⚠ ${issues.length} objeción(es) de validación` : ""),
+    );
+    trace.detail("agente", () => ({
+      titular: summary.headline,
+      resumen: summary.summary,
+      afecta: summary.affects,
+      beneficia: summary.benefits,
+      implicaciones: summary.implications,
+      hallazgos: (summary.flags ?? []).map((f) => `[${f.severity}] ${f.title}`),
+      objeciones: issues,
+    }));
 
     await updateLaw(id, {
       headline: summary.headline || detail.title,
@@ -243,14 +300,17 @@ export async function summariseLaw(
       // here quotes a clause that really exists.
       flags: summary.flags,
 
-      originalMarkdown: lawTextToMarkdown(text),
+      originalMarkdown: markdown,
       documentName: document.filename,
       status: "ready",
       lastError: issues.length ? issues.join("; ") : null,
     });
+
+    trace.done("ready", `"${(summary.headline || detail.title).slice(0, 60)}"`);
     return "ready";
   } catch (err) {
     await updateLaw(id, { status: "failed", lastError: errorText(err) });
+    trace.failed("resumir", err);
     return "failed";
   }
 }
@@ -272,8 +332,12 @@ export async function fillSummaries(): Promise<
   { summarised: number; withoutText: number; failed: number }
 > {
   const queue = await listLawsAwaitingSummary(config.lawSummaryFloor, config.lawSummaryBatch);
+  if (queue.length) {
+    sweepLog(`por explicar: ${queue.map((l) => l.number).join(", ")}`);
+  }
 
   let summarised = 0;
+
   let withoutText = 0;
   let failed = 0;
 
@@ -302,10 +366,18 @@ export async function fillSummaries(): Promise<
  * batch — could keep the catalogue from ever moving past a bad patch.
  */
 async function phase<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
+  const startedAt = performance.now();
   try {
-    return await run();
+    const result = await run();
+    sweepLog(`${name} ok en ${Math.round(performance.now() - startedAt)}ms`);
+    return result;
   } catch (err) {
-    console.error(`[laws] ${name} failed:`, err instanceof Error ? err.message : err);
+    // Timed even when it fails: how long a phase ran before giving up separates
+    // "the site refused us immediately" from "it hung until the timeout".
+    console.error(
+      `[laws] ${name} falló tras ${Math.round(performance.now() - startedAt)}ms:`,
+      err instanceof Error ? err.message : err,
+    );
     return fallback;
   }
 }

@@ -21,6 +21,7 @@
 // grid and the detail tables are in the HTML the server sends.
 
 import { config } from "../config.ts";
+import { bytes as humanBytes, Trace } from "../lib/trace.ts";
 import type { LawAffectation } from "../types.ts";
 
 /** The WebForms application, inside the iframe of the public SharePoint page. */
@@ -120,6 +121,16 @@ function mergeCookies(previous: string, headers: Headers): string {
  */
 const REQUEST_ATTEMPTS = 3;
 
+/**
+ * How long the most recent round trip took.
+ *
+ * Module-level rather than returned, so that adding timing to the log did not
+ * mean changing the signature of every function between here and the caller.
+ * Safe because the crawler is strictly sequential: one request is in flight at
+ * a time, by design, since the whole point is not to burden the Asamblea.
+ */
+let lastRequestMs = 0;
+
 /** True for the failures that are worth a second try: timeouts and dropped connections. */
 function isTransient(err: unknown): boolean {
   return err instanceof DOMException && err.name === "TimeoutError" ||
@@ -147,6 +158,7 @@ async function request(
     try {
       // The body is rebuilt per attempt: a URLSearchParams is consumed once it
       // has been sent, so reusing it would post an empty form on the retry.
+      const startedAt = performance.now();
       const response = await fetch(FORM_URL, {
         method: body ? "POST" : "GET",
         headers,
@@ -154,6 +166,11 @@ async function request(
         client: await client(),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
+
+      // The round trip is timed on every request because latency here is the
+      // early warning for the timeouts that used to end a whole sweep: a site
+      // drifting from 2s to 20s shows up in these numbers long before it fails.
+      lastRequestMs = Math.round(performance.now() - startedAt);
 
       return { response, cookie: mergeCookies(session?.cookie ?? "", response.headers) };
     } catch (err) {
@@ -394,9 +411,31 @@ export async function searchLaw(
   session: LeySession,
   number: number,
 ): Promise<LawRow | null> {
+  const trace = new Trace(number);
   const { html } = await postBack(session, { [BUTTON_SEARCH]: "Buscar" }, String(number));
-  if (decodeEntities(html).toLowerCase().includes(NOT_FOUND_MESSAGE)) return null;
-  return parseGrid(html).find((r) => r.number === number) ?? null;
+
+  if (decodeEntities(html).toLowerCase().includes(NOT_FOUND_MESSAGE)) {
+    trace.step("buscar", `sin resultados (${lastRequestMs}ms)`);
+    return null;
+  }
+
+  const rows = parseGrid(html);
+  const match = rows.find((r) => r.number === number) ?? null;
+
+  trace.step(
+    "buscar",
+    `HTML ${humanBytes(html.length)} → ${rows.length} fila(s) → ` +
+      `${match ? `ley ${match.number}` : "ninguna coincide"} (${lastRequestMs}ms)`,
+  );
+  // The whole grid, not just the match: when the parse goes wrong it is usually
+  // because the page returned rows we did not expect, and the count alone does
+  // not say which ones.
+  trace.detail("buscar", () => ({
+    filas: rows.map((r) => `${r.number}: ${r.title}`),
+    coincidencia: match?.title ?? null,
+  }));
+
+  return match;
 }
 
 /**
@@ -414,23 +453,75 @@ export async function selectLaw(
     __EVENTARGUMENT: "Select$0",
   }, String(row.number));
 
+  const trace = new Trace(row.number);
   const detail = detailPairs(html, "ContentPlaceHolder1_dvDetalleLey");
   const project = detailPairs(html, "ContentPlaceHolder1_dvProyectoLey");
+
+  // Each date is read raw and converted separately so the log can show both
+  // sides. This is the stage that fails quietly: an unfamiliar date format
+  // becomes null, the law still saves, and the site shows a law with no date
+  // rather than an error anybody would notice.
+  const rawDates = {
+    publicación: pick(detail, "Fecha de Publicación"),
+    emisión: pick(detail, "Emitido Asamblea Legislativa"),
+    sanción: pick(detail, "Sancionado Poder Ejecutivo"),
+    rige: pick(detail, "Rige"),
+  };
+  const dates = {
+    publishedAt: parseSilDate(rawDates.publicación),
+    emittedAt: parseSilDate(rawDates.emisión),
+    sanctionedAt: parseSilDate(rawDates.sanción),
+    effectiveAt: parseSilDate(rawDates.rige),
+  };
+
+  const affectations = parseAffectations(html);
+  const vigente = pick(detail, "Vigente");
+
+  // A date the SIL printed but we could not read is worth a line at normal
+  // volume: it is the difference between "the Asamblea left it blank" and "our
+  // parser does not know this format", and only the second is our bug.
+  const dropped = Object.entries(rawDates)
+    .filter(([k, v]) =>
+      v && !dates[
+        ({
+          publicación: "publishedAt",
+          emisión: "emittedAt",
+          sanción: "sanctionedAt",
+          rige: "effectiveAt",
+        } as const)[k as keyof typeof rawDates]
+      ]
+    )
+    .map(([k, v]) => `${k}="${v}"`);
+
+  trace.step(
+    "detalle",
+    `${Object.keys(detail).length + Object.keys(project).length} campo(s) → ` +
+      `vigente=${vigente === "1"}, ${Object.values(dates).filter(Boolean).length}/4 fecha(s), ` +
+      `${affectations.length} afectación(es) (${lastRequestMs}ms)` +
+      (dropped.length ? ` ⚠ sin convertir: ${dropped.join(", ")}` : ""),
+  );
+
+  trace.transform("detalle.publicación", rawDates.publicación, dates.publishedAt);
+  trace.transform("detalle.rige", rawDates.rige, dates.effectiveAt);
+  trace.detail("detalle", () => ({
+    vigente: `${vigente} → ${vigente === "1"}`,
+    gaceta: pick(detail, "Número de Gaceta"),
+    expediente: pick(project, "Número Expediente Legislativo"),
+    asunto: pick(project, "Asunto Expediente Legislativo"),
+    afectaciones: affectations.map((a) => `${a.lawNumber} ${a.affectedArticle}`),
+  }));
 
   return {
     ...row,
     // The Asamblea prints "1" for a law in force and "0" for one repealed.
-    inForce: (pick(detail, "Vigente") ?? "") === "1",
-    publishedAt: parseSilDate(pick(detail, "Fecha de Publicación")),
+    inForce: vigente === "1",
+    ...dates,
     gacetaNumber: pick(detail, "Número de Gaceta"),
     alcanceNumber: pick(detail, "Número de Alcance"),
-    emittedAt: parseSilDate(pick(detail, "Emitido Asamblea Legislativa")),
-    sanctionedAt: parseSilDate(pick(detail, "Sancionado Poder Ejecutivo")),
-    effectiveAt: parseSilDate(pick(detail, "Rige")),
     expedienteNumber: pick(project, "Número Expediente Legislativo"),
     expedienteSubject: pick(project, "Asunto Expediente Legislativo"),
     procedureType: pick(project, "Descripcion Tipo"),
-    affectations: parseAffectations(html),
+    affectations,
   };
 }
 
@@ -453,13 +544,33 @@ export async function downloadLawText(
   session: LeySession,
   row: LawRow,
 ): Promise<LawDocument | null> {
+  const trace = new Trace(row.number);
   const { bytes, filename } = await postBack(
     session,
     { [BUTTON_DOWNLOAD_TEXT]: "Descargar" },
     String(row.number),
   );
-  if (!bytes || bytes.length === 0) return null;
-  return { bytes, filename: filename ?? `${row.number}.docx` };
+
+  if (!bytes || bytes.length === 0) {
+    trace.step("descargar", `sin archivo — la Asamblea no lo publica (${lastRequestMs}ms)`);
+    return null;
+  }
+
+  const name = filename ?? `${row.number}.docx`;
+  // The magic number is reported next to the size because the failure this
+  // catches is a download that "worked": a few hundred bytes of HTML, which
+  // only looks wrong once you notice it does not start with PK.
+  const magic = Array.from(bytes.slice(0, 2))
+    .map((b) => String.fromCharCode(b))
+    .join("");
+
+  trace.step(
+    "descargar",
+    `${name} → ${humanBytes(bytes.length)}, firma "${magic}"` +
+      `${magic === "PK" ? " (zip/docx)" : " ⚠ no es un .docx"} (${lastRequestMs}ms)`,
+  );
+
+  return { bytes, filename: name };
 }
 
 /**
