@@ -32,7 +32,6 @@ export const PUBLIC_CONSULTA_URL =
   "https://www.asamblea.go.cr/Centro_de_informacion/Consultas_SIL/SitePages/ConsultaLeyes.aspx";
 
 const USER_AGENT = "CensoBot/1.0 (+https://elcenso.cr) civic transparency reader";
-const REQUEST_TIMEOUT_MS = 45_000;
 
 // ── Control names ────────────────────────────────────────────────────────────
 // Verified against the live page. They are ASP.NET's generated names, so they
@@ -62,7 +61,18 @@ async function client(): Promise<Deno.HttpClient> {
   if (httpClient) return httpClient;
   const url = new URL("../../certs/asamblea-chain.pem", import.meta.url);
   const caCerts = [await Deno.readTextFile(url)];
-  httpClient = Deno.createHttpClient({ caCerts });
+
+  // The SIL answers only to Costa Rican networks. A server hosted abroad has to
+  // borrow an egress inside the country, which is what this proxy is for.
+  const proxy = config.lawHttpProxy;
+  httpClient = proxy
+    ? Deno.createHttpClient({ caCerts, proxy: { url: proxy } })
+    : Deno.createHttpClient({ caCerts });
+
+  if (proxy) {
+    // The host, never the whole URL: a proxy URL can carry credentials.
+    console.log(`[laws] saliendo por proxy ${new URL(proxy).host}`);
+  }
   return httpClient;
 }
 
@@ -164,7 +174,7 @@ async function request(
         headers,
         body: body ? new URLSearchParams(body) : undefined,
         client: await client(),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(config.lawRequestTimeoutMs),
       });
 
       // The round trip is timed on every request because latency here is the
@@ -175,7 +185,25 @@ async function request(
       return { response, cookie: mergeCookies(session?.cookie ?? "", response.headers) };
     } catch (err) {
       lastError = err;
-      if (!isTransient(err) || attempt === REQUEST_ATTEMPTS) throw err;
+      if (!isTransient(err)) throw err;
+
+      // Out of attempts. A bare "aborted due to timeout" sends whoever reads
+      // the log hunting for a bug in this file, when the cause is almost always
+      // that the host cannot be reached from where the server runs: the SIL
+      // answers Costa Rican networks and silently drops everything else, so the
+      // connection hangs instead of being refused. Saying so here is the
+      // difference between a five-minute fix and an afternoon.
+      if (attempt === REQUEST_ATTEMPTS) {
+        throw new Error(
+          `No se pudo contactar ${new URL(FORM_URL).host} en ${REQUEST_ATTEMPTS} intentos de ` +
+            `${config.lawRequestTimeoutMs / 1000}s. El sitio de la Asamblea responde solo desde ` +
+            `redes de Costa Rica; desde otro país la conexión no se rechaza, se descarta, y por ` +
+            `eso expira. Si este servidor está fuera del país, configure LAW_HTTP_PROXY con una ` +
+            `salida costarricense.` +
+            (config.lawHttpProxy ? ` Proxy actual: ${new URL(config.lawHttpProxy).host}.` : ""),
+          { cause: err },
+        );
+      }
 
       // Backing off rather than retrying immediately: if the site is struggling,
       // a tighter loop is the least helpful thing we could do to it.

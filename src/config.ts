@@ -66,6 +66,15 @@ export const config = {
   lawCeilingScanLimit: int("LAW_CEILING_SCAN_LIMIT", 25),
   // Pause between requests to the Asamblea, in milliseconds.
   lawRequestDelayMs: int("LAW_REQUEST_DELAY_MS", 750),
+  // How long to wait for one request before giving up. From inside Costa Rica
+  // the site answers in about a second, so a long wait buys nothing: it only
+  // decides how long an unreachable host takes to admit it.
+  lawRequestTimeoutMs: int("LAW_REQUEST_TIMEOUT_MS", 20_000),
+  // Optional outbound proxy for the Asamblea. The SIL is only reachable from
+  // Costa Rican networks, so a server hosted abroad needs to borrow an egress
+  // inside the country. Blank means connect directly.
+  lawHttpProxy: Deno.env.get("LAW_HTTP_PROXY") ?? "",
+
   // How much the law pipeline says as it works: "quiet" for nothing but
   // failures, "normal" for one line per transformation, "verbose" for the
   // values themselves. Verbose prints law text and model output, so it is for
