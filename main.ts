@@ -147,7 +147,10 @@ if (config.lawsEnabled) {
   setTimeout(lawTick, 25_000);
   setInterval(lawTick, everyMs);
 } else {
-  console.log("laws off (LAWS_ENABLED is not true). Sweep manually: POST /api/admin/laws/sweep");
+  console.log(
+    "laws off (LAWS_ENABLED is not true). " +
+      "Run one pass with: POST /api/laws/sweep (needs LAW_SWEEP_TOKEN)",
+  );
 }
 
 if (config.pipelineEnabled) {

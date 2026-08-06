@@ -111,6 +111,21 @@ function mergeCookies(previous: string, headers: Headers): string {
   return [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
+/**
+ * How many times a request is attempted before giving up.
+ *
+ * The Asamblea's server is occasionally slow enough to pass the timeout, and a
+ * single lost request would otherwise end a whole sweep. Retrying here rather
+ * than in the caller keeps that failure from ever reaching the crawl logic.
+ */
+const REQUEST_ATTEMPTS = 3;
+
+/** True for the failures that are worth a second try: timeouts and dropped connections. */
+function isTransient(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "TimeoutError" ||
+    err instanceof TypeError; // fetch reports a broken connection this way
+}
+
 async function request(
   session: LeySession | null,
   body: URLSearchParams | null,
@@ -127,15 +142,36 @@ async function request(
     headers["Origin"] = new URL(FORM_URL).origin;
   }
 
-  const response = await fetch(FORM_URL, {
-    method: body ? "POST" : "GET",
-    headers,
-    body: body ?? undefined,
-    client: await client(),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= REQUEST_ATTEMPTS; attempt++) {
+    try {
+      // The body is rebuilt per attempt: a URLSearchParams is consumed once it
+      // has been sent, so reusing it would post an empty form on the retry.
+      const response = await fetch(FORM_URL, {
+        method: body ? "POST" : "GET",
+        headers,
+        body: body ? new URLSearchParams(body) : undefined,
+        client: await client(),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
 
-  return { response, cookie: mergeCookies(session?.cookie ?? "", response.headers) };
+      return { response, cookie: mergeCookies(session?.cookie ?? "", response.headers) };
+    } catch (err) {
+      lastError = err;
+      if (!isTransient(err) || attempt === REQUEST_ATTEMPTS) throw err;
+
+      // Backing off rather than retrying immediately: if the site is struggling,
+      // a tighter loop is the least helpful thing we could do to it.
+      const wait = 2_000 * attempt;
+      console.warn(
+        `[laws] request failed (${(err as Error).name}), ` +
+          `retrying in ${wait / 1000}s — attempt ${attempt + 1} of ${REQUEST_ATTEMPTS}`,
+      );
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+
+  throw lastError;
 }
 
 /** Opens the form and reads its initial view state. */

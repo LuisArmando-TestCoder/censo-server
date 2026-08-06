@@ -293,13 +293,42 @@ export async function fillSummaries(): Promise<
 // ── The tick ─────────────────────────────────────────────────────────────────
 
 /**
+ * Runs one phase, turning a failure into a logged miss.
+ *
+ * The three phases are independent pieces of work, and the Asamblea's server is
+ * intermittently slow enough that any one of them can still fail after its
+ * retries. Letting that end the tick would mean an unlucky minute costs the
+ * whole hour, and — because the descent saves its position only at the end of a
+ * batch — could keep the catalogue from ever moving past a bad patch.
+ */
+async function phase<T>(name: string, run: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    console.error(`[laws] ${name} failed:`, err instanceof Error ? err.message : err);
+    return fallback;
+  }
+}
+
+/**
  * One pass of everything, in the order that keeps the site freshest: new laws
  * first, then explanations for what is already known, then a slice of history.
+ *
+ * Each phase is isolated, so a tick reports what it managed rather than
+ * throwing away the work that succeeded before something went wrong.
  */
 export async function sweepLaws(): Promise<LawSweepReport> {
-  const top = await watchTop();
-  const filled = await fillSummaries();
-  const walked = await descend();
+  const top = await phase("watchTop", watchTop, { catalogued: 0, ceiling: 0 });
+  const filled = await phase("fillSummaries", fillSummaries, {
+    summarised: 0,
+    withoutText: 0,
+    failed: 0,
+  });
+  const walked = await phase("descend", descend, {
+    catalogued: 0,
+    missing: 0,
+    state: { nextNumber: 0, complete: false },
+  });
 
   return {
     catalogued: top.catalogued + walked.catalogued,
