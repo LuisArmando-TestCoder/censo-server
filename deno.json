@@ -10,8 +10,9 @@
     "verify:scrape": "deno run --allow-net --allow-env --allow-read --allow-run --allow-sys --env-file scripts/verify-scrape.ts",
     "verify:gaceta": "deno run --allow-net --allow-env --allow-read --allow-run --allow-sys --env-file scripts/verify-gaceta.ts",
     "verify:leyes": "deno run --allow-net --allow-env --allow-read --allow-sys --env-file scripts/verify-leyes.ts",
-
-
+    "crawl": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run --allow-sys --env-file scripts/crawl-laws.ts",
+    "login:gemini": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run --allow-sys --env-file scripts/login-gemini.ts",
+    "notes": "deno run --allow-net --allow-env --allow-read --allow-write --allow-run --allow-sys --env-file scripts/crawl-notes.ts",
 
     "verify:validator": "deno run --allow-net --allow-env --allow-read --env-file scripts/verify-validator.ts",
     "verify:api": "deno run --allow-net --allow-env --allow-read --env-file scripts/verify-api.ts",

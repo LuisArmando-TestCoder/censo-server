@@ -493,6 +493,8 @@ export interface Law {
 
   likeCount: number;
   dislikeCount: number;
+  /** Kept in step by the shared comment thread, same as a note. */
+  commentCount: number;
 
   /** When we last asked the Asamblea for this law's text. */
   textCheckedAt: string | null;

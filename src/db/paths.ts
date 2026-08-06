@@ -41,6 +41,26 @@ export const legalDoc = (id: string) => `${COL.legalDocs}/${id}`;
 // Laws are keyed by their own number, so the path *is* the identity check.
 export const lawDoc = (number: string) => `${COL.laws}/${number}`;
 export const lawReactionsCol = (number: string) => `${lawDoc(number)}/reactions`;
+export const lawCommentsCol = (number: string) => `${lawDoc(number)}/comments`;
+
+/**
+ * A law's discussion, described the way db/comments.ts wants it. Threads live
+ * under the thing they discuss, so a law and its comments are read, written and
+ * deleted together.
+ */
+export const lawCommentParent = (number: string) => ({
+  col: lawCommentsCol(number),
+  doc: lawDoc(number),
+  subjectId: number,
+});
+
+/** The same, for a note. */
+export const postCommentParent = (id: string) => ({
+  col: commentsCol(id),
+  doc: postDoc(id),
+  subjectId: id,
+});
+
 export const lawReactionDoc = (number: string, userId: string) =>
   `${lawReactionsCol(number)}/${userId}`;
 export const crawlStateDoc = (id: string) => `${COL.crawlState}/${id}`;

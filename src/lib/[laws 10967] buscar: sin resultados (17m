@@ -1,0 +1,15 @@
+[laws 10967] buscar: sin resultados (17ms)
+[laws 10968] buscar: sin resultados (17ms)
+[laws 10969] buscar: sin resultados (16ms)
+
+
+cd censo-server
+
+# 1. Sign in once — a window opens, log into Google, press Enter here
+CHROME_PROFILE_DIR=./.chrome deno task login:gemini
+
+# 2. Explanations for the laws → this is what fills the hero carousel
+CHROME_PROFILE_DIR=./.chrome deno task crawl --summaries
+
+# 3. The notes pipeline: calendar, news, La Gaceta
+CHROME_PROFILE_DIR=./.chrome deno task notes

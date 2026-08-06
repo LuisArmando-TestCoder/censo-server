@@ -9,3 +9,6 @@ service-account.json
 # OS
 .DS_Store
 node_modules
+# Chrome profile holding the crawler's Google session. Never commit: it is a
+# live credential.
+.chrome/

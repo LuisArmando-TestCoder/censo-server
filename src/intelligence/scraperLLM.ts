@@ -60,17 +60,47 @@ export async function openBrowser(): Promise<void> {
   const options = new Options();
   options.addArguments("--window-size=1200,1000");
   options.addArguments("--disable-blink-features=AutomationControlled");
-  options.addArguments("--headless=new");
   options.addArguments("--no-sandbox"); // required on most Linux hosts
   options.addArguments("--disable-dev-shm-usage"); // small /dev/shm in containers
   options.addArguments("--disable-gpu");
   options.excludeSwitches("enable-automation");
 
+  // A profile directory is what makes this usable at all. Without one, Chrome
+  // starts signed out on every run, stops at the Google login screen, and the
+  // wait below times out — which is exactly how this fails today. Point
+  // CHROME_PROFILE_DIR at a directory, sign in once by hand, and the session
+  // persists across runs.
+  //
+  // It is deliberately not the everyday Chrome profile: Chrome refuses to share
+  // a profile directory with a running instance, so borrowing it would either
+  // fail or force the browser closed mid-work.
+  const profileDir = Deno.env.get("CHROME_PROFILE_DIR");
+  if (profileDir) options.addArguments(`--user-data-dir=${profileDir}`);
+
+  // Headless by default, because that is how it runs unattended. The signing-in
+  // step needs a visible window, and there is no way to type a password into a
+  // browser nobody can see.
+  const headless = (Deno.env.get("CHROME_HEADLESS") ?? "true") !== "false";
+  if (headless) options.addArguments("--headless=new");
+
   driver = await new Builder().forBrowser(Browser.CHROME).setChromeOptions(options).build();
   await driver.get(GEMINI_URL);
-  // A signed-out profile stops here until someone logs in. That is why the
-  // pipeline is off by default and runs only where a warm profile exists.
-  await waitFor(CHAT_INPUT, LOGIN_WAIT_MS);
+
+  // A signed-out profile stops here until someone logs in.
+  try {
+    await waitFor(CHAT_INPUT, LOGIN_WAIT_MS);
+  } catch (err) {
+    throw new Error(
+      profileDir
+        ? `Gemini no mostró el campo de texto en ${LOGIN_WAIT_MS / 1000}s. La sesión del perfil ` +
+          `${profileDir} probablemente expiró: vuelva a iniciarla con ` +
+          `CHROME_HEADLESS=false deno task login:gemini`
+        : `Gemini no mostró el campo de texto en ${LOGIN_WAIT_MS / 1000}s porque el navegador ` +
+          `arranca sin sesión. Configure CHROME_PROFILE_DIR e inicie sesión una vez con ` +
+          `CHROME_HEADLESS=false deno task login:gemini`,
+      { cause: err },
+    );
+  }
 }
 
 export async function closeBrowser(): Promise<void> {

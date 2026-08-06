@@ -18,6 +18,9 @@ import {
   setLawReaction,
 } from "../db/laws.ts";
 import { summariseOnDemand, sweepLaws } from "../scrape/lawSweep.ts";
+import { listComments, viewComments } from "../db/comments.ts";
+import { lawCommentParent } from "../db/paths.ts";
+import { commentViewer, postComment } from "./commentFlow.ts";
 
 import { config } from "../config.ts";
 import type { Law, ReactionKind } from "../types.ts";
@@ -61,6 +64,7 @@ function publicLaw(law: Law) {
     status: law.status,
     likeCount: law.likeCount,
     dislikeCount: law.dislikeCount,
+    commentCount: law.commentCount ?? 0,
   };
 }
 
@@ -162,11 +166,34 @@ laws.get("/:number", optionalAuth, async (c) => {
   const user = c.get("user");
   const mine = user ? await lawReactionsForUser([String(number)], user.id) : {};
 
+  // The thread ships with the law, the way a note ships with its own. One
+  // request rather than two, so the discussion is on screen when the page is
+  // rather than appearing a moment later underneath it.
+  const thread = await listComments(lawCommentParent(String(number)));
+
   return c.json({
     law: publicLaw(law!),
     myReaction: mine[String(number)] ?? null,
+    comments: viewComments(thread, await commentViewer(user ?? null)),
   });
 });
+
+/**
+ * POST /:number/comments — say something about a law.
+ *
+ * Every rule about who may comment and what survives screening lives in
+ * commentFlow, shared with notes. A law only has to exist to be discussed: a
+ * catalogued one whose explanation has not been written yet is still a real law
+ * that a person may have an opinion about, and refusing them would be refusing
+ * the very thing the site is for.
+ */
+laws.post("/:number/comments", requireAuth, async (c) => {
+  const number = readNumber(c.req.param("number"));
+  if (!await getLaw(String(number))) fail(404, "Esa ley no existe.");
+
+  return await postComment(c, lawCommentParent(String(number)));
+});
+
 
 // POST /:number/reaction — like or dislike. Pressing the same button undoes it.
 laws.post("/:number/reaction", requireAuth, async (c) => {

@@ -4,7 +4,6 @@
 // derivative maintained with atomic increments, never a read-modify-write.
 
 import {
-  fsCreate,
   fsDelete,
   fsGet,
   fsIncrement,
@@ -15,15 +14,25 @@ import {
   fsUpdate,
 } from "./firestore.ts";
 
-import { COL, commentDoc, commentsCol, postDoc, reactionDoc, reactionsCol } from "./paths.ts";
+// Namespaced because `comments` is also a natural local name for a list of
+// them, and one of those shadowing the other reads as a bug.
+import * as thread from "./comments.ts";
+import {
+  COL,
+  commentsCol,
+  postCommentParent,
+  postDoc,
+  reactionDoc,
+  reactionsCol,
+} from "./paths.ts";
 import { randomId } from "../lib/validate.ts";
 import { slugify } from "../lib/hash.ts";
 import type {
   Citation,
   Comment,
   CommentTone,
-  CommentView,
   Post,
+
   PostBlock,
   PostOrigin,
   PostStatus,
@@ -186,8 +195,14 @@ export async function reactionsForUser(
 }
 
 // ── Comments ─────────────────────────────────────────────────────────────────
+// The thread itself lives in db/comments.ts, because laws carry the same one.
+// What remains here is the post-shaped way in: callers keep passing a postId
+// and never have to know a path. Re-exported rather than reimplemented, so
+// there is exactly one place where a comment is screened, locked or hidden.
 
-export async function addComment(
+export { viewComments } from "./comments.ts";
+
+export function addComment(
   postId: string,
   userId: string,
   displayName: string,
@@ -195,82 +210,39 @@ export async function addComment(
   tone: CommentTone = "clean",
   parentId: string | null = null,
 ): Promise<Comment> {
-  const id = randomId(10);
-  const comment: Comment = {
-    id,
-    postId,
+  return thread.addComment(
+    postCommentParent(postId),
     userId,
     displayName,
     body,
-    parentId,
-    createdAt: new Date().toISOString(),
-
-    hidden: false,
     tone,
-    screened: false,
-  };
-  await fsCreate(commentsCol(postId), id, comment as unknown as Record<string, unknown>);
-  await fsIncrement(postDoc(postId), { commentCount: 1 });
-  return comment;
+    parentId,
+  );
 }
 
-export async function listComments(postId: string): Promise<Comment[]> {
-  const rows = await fsList<Comment>(commentsCol(postId));
-  return rows
-    .filter((r) => !r.hidden)
-    // Comments written before screening existed have no tone. Treat them as
-    // clean rather than blurring a thread nobody flagged.
-    // Comments written before replies existed sit at the top of the thread.
-    .map((r) => ({
-      ...r,
-      tone: r.tone ?? "clean",
-      screened: r.screened ?? false,
-      parentId: r.parentId ?? null,
-    }))
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-}
-
-/**
- * Prepares comments for a specific reader.
- *
- * A locked comment goes out with `body: null`. The words never leave the server
- * for someone who has not passed the gate, which is the difference between a
- * real restriction and a CSS blur that any reader can remove with devtools.
- * People always see their own comments, whatever tone they were given.
- */
-export function viewComments(
-  comments: Comment[],
-  viewer: { id: string; canSeeControversial: boolean } | null,
-): CommentView[] {
-  return comments.map((c) => {
-    const allowed = c.tone === "clean" ||
-      (viewer !== null && (viewer.canSeeControversial || viewer.id === c.userId));
-
-    const { body: _body, ...rest } = c;
-    return { ...rest, body: allowed ? c.body : null, locked: !allowed };
-  });
+export function listComments(postId: string): Promise<Comment[]> {
+  return thread.listComments(postCommentParent(postId));
 }
 
 /** Records the model's verdict on a comment already in the thread. */
-export async function setCommentTone(
+export function setCommentTone(
   postId: string,
   commentId: string,
   tone: CommentTone,
 ): Promise<void> {
-  await fsUpdate(commentDoc(postId, commentId), { tone, screened: true });
+  return thread.setCommentTone(postCommentParent(postId), commentId, tone);
 }
 
 /** The model found junk after the fact. Hide it and mark it screened. */
-export async function rejectComment(postId: string, commentId: string): Promise<void> {
-  await fsUpdate(commentDoc(postId, commentId), { hidden: true, screened: true });
-  await fsIncrement(postDoc(postId), { commentCount: -1 });
+export function rejectComment(postId: string, commentId: string): Promise<void> {
+  return thread.rejectComment(postCommentParent(postId), commentId);
 }
 
 /** Moderation hides a comment rather than deleting it, preserving the record. */
-export async function hideComment(postId: string, commentId: string): Promise<void> {
-  await fsUpdate(commentDoc(postId, commentId), { hidden: true });
-  await fsIncrement(postDoc(postId), { commentCount: -1 });
+export function hideComment(postId: string, commentId: string): Promise<void> {
+  return thread.hideComment(postCommentParent(postId), commentId);
 }
+
 
 /** Recomputes the cached counters from the source of truth. */
 export async function recountPost(postId: string): Promise<void> {
