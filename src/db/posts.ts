@@ -32,7 +32,6 @@ import type {
   Comment,
   CommentTone,
   Post,
-
   PostBlock,
   PostOrigin,
   PostStatus,
@@ -85,6 +84,7 @@ export async function createPost(input: CreatePostInput): Promise<Post> {
 
     dislikeCount: 0,
     commentCount: 0,
+    viewCount: 0,
     publishedAt: input.status === "published" ? now : null,
     createdAt: now,
     updatedAt: now,
@@ -242,7 +242,6 @@ export function rejectComment(postId: string, commentId: string): Promise<void> 
 export function hideComment(postId: string, commentId: string): Promise<void> {
   return thread.hideComment(postCommentParent(postId), commentId);
 }
-
 
 /** Recomputes the cached counters from the source of truth. */
 export async function recountPost(postId: string): Promise<void> {

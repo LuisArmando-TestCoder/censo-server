@@ -19,7 +19,8 @@ import {
 } from "../db/laws.ts";
 import { summariseOnDemand, sweepLaws } from "../scrape/lawSweep.ts";
 import { listComments, viewComments } from "../db/comments.ts";
-import { lawCommentParent } from "../db/paths.ts";
+import { lawCommentParent, lawDoc } from "../db/paths.ts";
+import { recordView } from "../db/views.ts";
 import { commentViewer, postComment } from "./commentFlow.ts";
 
 import { config } from "../config.ts";
@@ -65,6 +66,7 @@ function publicLaw(law: Law) {
     likeCount: law.likeCount,
     dislikeCount: law.dislikeCount,
     commentCount: law.commentCount ?? 0,
+    viewCount: law.viewCount ?? 0,
   };
 }
 
@@ -99,6 +101,8 @@ function lawCard(law: Law) {
     flagSeverity: severity,
     likeCount: law.likeCount,
     dislikeCount: law.dislikeCount,
+    commentCount: law.commentCount ?? 0,
+    viewCount: law.viewCount ?? 0,
   };
 }
 
@@ -194,6 +198,19 @@ laws.post("/:number/comments", requireAuth, async (c) => {
   return await postComment(c, lawCommentParent(String(number)));
 });
 
+/**
+ * POST /:number/view — one person opened this law.
+ *
+ * Open to anyone, because most readers have no account and counting only the
+ * signed-in ones would report a number that means something quite different
+ * from what it says. Failing quietly: a lost count is not worth an error
+ * message over somebody's reading.
+ */
+laws.post("/:number/view", async (c) => {
+  const number = readNumber(c.req.param("number"));
+  await recordView(lawDoc(String(number))).catch(() => {});
+  return c.body(null, 204);
+});
 
 // POST /:number/reaction — like or dislike. Pressing the same button undoes it.
 laws.post("/:number/reaction", requireAuth, async (c) => {

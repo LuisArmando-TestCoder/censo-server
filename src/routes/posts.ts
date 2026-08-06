@@ -20,7 +20,8 @@ import {
 } from "../db/posts.ts";
 import { listActiveFields } from "../db/fields.ts";
 import { addCommentStrike, commentStanding, getUser, isAdult } from "../db/users.ts";
-import { postCommentParent } from "../db/paths.ts";
+import { postCommentParent, postDoc } from "../db/paths.ts";
+import { recordView } from "../db/views.ts";
 import { commentViewer, postComment } from "./commentFlow.ts";
 import { type Screening, screenLocally, screenWithModel } from "../intelligence/moderator.ts";
 
@@ -54,6 +55,7 @@ function publicPost(post: Post, visibleFieldIds: Set<string>) {
     likeCount: post.likeCount,
     dislikeCount: post.dislikeCount,
     commentCount: post.commentCount,
+    viewCount: post.viewCount ?? 0,
     publishedAt: post.publishedAt,
   };
 }
@@ -116,6 +118,15 @@ posts.post("/:id/reaction", requireAuth, async (c) => {
 });
 
 // POST /:id/comments — say something. Markup is stripped, never rendered raw.
+/**
+ * POST /:id/view — one person opened this note. Anonymous on purpose; see
+ * db/views.ts for why this is not folded into the GET.
+ */
+posts.post("/:id/view", async (c) => {
+  await recordView(postDoc(c.req.param("id"))).catch(() => {});
+  return c.body(null, 204);
+});
+
 posts.post("/:id/comments", requireAuth, async (c) => {
   const postId = c.req.param("id");
 

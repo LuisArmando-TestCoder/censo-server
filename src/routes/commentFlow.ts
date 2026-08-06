@@ -13,7 +13,7 @@ import type { Context } from "hono";
 import type { CommentParent } from "../db/comments.ts";
 import { addComment, listComments, rejectComment, setCommentTone } from "../db/comments.ts";
 import { addCommentStrike, commentStanding, getUser, isAdult } from "../db/users.ts";
-import { screenLocally, type Screening, screenWithModel } from "../intelligence/moderator.ts";
+import { type Screening, screenLocally, screenWithModel } from "../intelligence/moderator.ts";
 import { fail, requireString, stripHtml } from "../lib/validate.ts";
 import type { User } from "../types.ts";
 

@@ -235,6 +235,11 @@ export interface Post {
   likeCount: number;
   dislikeCount: number;
   commentCount: number;
+  /**
+   * How many times this was opened. A cached derivative like the others, and
+   * the least precise of them: it counts arrivals, not people.
+   */
+  viewCount: number;
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -495,6 +500,8 @@ export interface Law {
   dislikeCount: number;
   /** Kept in step by the shared comment thread, same as a note. */
   commentCount: number;
+  /** Arrivals on this law's page. Same meaning as a note's. */
+  viewCount: number;
 
   /** When we last asked the Asamblea for this law's text. */
   textCheckedAt: string | null;

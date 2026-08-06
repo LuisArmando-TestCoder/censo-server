@@ -77,6 +77,7 @@ export async function catalogueLaw(input: CatalogueLawInput): Promise<boolean> {
     likeCount: 0,
     dislikeCount: 0,
     commentCount: 0,
+    viewCount: 0,
     textCheckedAt: null,
     createdAt: now,
     updatedAt: now,
