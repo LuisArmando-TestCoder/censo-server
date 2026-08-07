@@ -49,6 +49,42 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Reintenta automáticamente cualquier llamada asíncrona si Firestore devuelve
+ * error de cuota/tasa (429 o RESOURCE_EXHAUSTED) mediante backoff exponencial.
+ */
+async function retryOnQuota<T>(
+  fn: () => Promise<T>,
+  maxRetries = 6,
+  initialDelayMs = 3000
+): Promise<T> {
+  let delay = initialDelayMs;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isQuota =
+        err instanceof Error &&
+        (err.message.includes("429") ||
+          err.message.includes("RESOURCE_EXHAUSTED") ||
+          err.message.includes("Quota exceeded"));
+
+      if (isQuota && attempt < maxRetries) {
+        console.warn(
+          `\n  [budget] Límite de ráfaga de Firestore (429). Reintentando en ${Math.round(
+            delay / 1000
+          )}s… (Intento ${attempt}/${maxRetries})`
+        );
+        await sleep(delay);
+        delay = Math.min(delay * 2, 60000);
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error("Se superó el número máximo de reintentos por límite de cuota.");
+}
+
 const startedAt = Date.now();
 console.log(`
 El Censo — notas
@@ -68,19 +104,37 @@ try {
   while (!stopping) {
     // Sweeping first so a long writing session still picks up anything that
     // appeared while it was working.
-    for (const r of await sweepAll()) {
-      collected += r.created + r.changed;
-      const summary = `${r.created} nuevos, ${r.changed} cambiados, ${r.unchanged} sin cambio`;
-      console.log(`  ${r.sourceId}: ${r.error ? `⚠ ${r.error}` : summary}`);
+    try {
+      const sweepResults = await retryOnQuota(() => sweepAll());
+      for (const r of sweepResults) {
+        collected += r.created + r.changed;
+        const summary = `${r.created} nuevos, ${r.changed} cambiados, ${r.unchanged} sin cambio`;
+        console.log(`  ${r.sourceId}: ${r.error ? `⚠ ${r.error}` : summary}`);
+      }
+    } catch (err) {
+      console.error(`  ✗ Error en sweepAll: ${err instanceof Error ? err.message : err}`);
     }
 
+    if (stopping) break;
+
     if (sweepOnly) {
-      const waiting = (await listPendingRawItems(200)).length;
-      console.log(`\nRecolectado. ${waiting} en cola, esperando a que alguien los escriba.`);
+      try {
+        const waiting = (await retryOnQuota(() => listPendingRawItems(200))).length;
+        console.log(`\nRecolectado. ${waiting} en cola, esperando a que alguien los escriba.`);
+      } catch (err) {
+        console.error(`  ✗ Error al obtener pendientes: ${err instanceof Error ? err.message : err}`);
+      }
       break;
     }
 
-    const queue = await listPendingRawItems(BATCH);
+    let queue: Awaited<ReturnType<typeof listPendingRawItems>> = [];
+    try {
+      queue = await retryOnQuota(() => listPendingRawItems(BATCH));
+    } catch (err) {
+      console.error(`  ✗ Error al consultar cola: ${err instanceof Error ? err.message : err}`);
+      break;
+    }
+
     if (queue.length === 0) {
       console.log("\nLa cola quedó vacía. No hay nada más que escribir por ahora.");
       break;
@@ -90,7 +144,7 @@ try {
     for (const item of queue) {
       if (stopping) break;
       try {
-        const result = await runPipeline(item);
+        const result = await retryOnQuota(() => runPipeline(item));
         // The verdict matters more than the count: an item the pipeline
         // declined is a decision it made on purpose, not a failure, and the two
         // should never be added together.
@@ -105,6 +159,9 @@ try {
         failed++;
         console.error(`  ✗ ${item.id}: ${err instanceof Error ? err.message : err}`);
       }
+
+      // Pausa de 300ms entre elementos para estabilizar ráfagas HTTP a Firestore
+      await sleep(300);
     }
 
     if (once) break;
