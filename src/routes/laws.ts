@@ -169,17 +169,19 @@ laws.get("/:number", optionalAuth, async (c) => {
   }
 
   const user = c.get("user");
-  const mine = user ? await lawReactionsForUser([String(number)], user.id) : {};
-
-  // The thread ships with the law, the way a note ships with its own. One
-  // request rather than two, so the discussion is on screen when the page is
-  // rather than appearing a moment later underneath it.
-  const thread = await listComments(lawCommentParent(String(number)));
+  
+  // FIX: Run independent database queries concurrently instead of sequentially
+  // This cuts down the total wait time by running these two network trips in parallel.
+  const [mine, thread, viewer] = await Promise.all([
+    user ? lawReactionsForUser([String(number)], user.id) : Promise.resolve({} as Record<string, any>),
+    listComments(lawCommentParent(String(number))),
+    commentViewer(user ?? null)
+  ]);
 
   return c.json({
     law: publicLaw(law!),
     myReaction: mine[String(number)] ?? null,
-    comments: viewComments(thread, await commentViewer(user ?? null)),
+    comments: viewComments(thread, viewer),
   });
 });
 
