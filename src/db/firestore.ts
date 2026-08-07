@@ -6,6 +6,7 @@
 // and atomic field increments for the reaction counters.
 
 import { config } from "../config.ts";
+import { recordRefusal, spend } from "../lib/budget.ts";
 
 interface ServiceAccount {
   project_id: string;
@@ -155,6 +156,20 @@ export async function databaseResourceName(): Promise<string> {
   return `projects/${sa.project_id}/databases/${config.firestoreDatabase}`;
 }
 
+/**
+ * Every read and every write in the system goes through here.
+ *
+ * That is what makes it the right place for the budget: one function to count,
+ * with no way for a repository to reach Firestore around it. The token exchange
+ * is deliberately outside the accounting — it is Google's OAuth endpoint, not
+ * the database, it is cached for an hour, and counting it would make the number
+ * mean something other than "documents we touched".
+ *
+ * A 429 is reported to the limiter rather than merely returned, because
+ * Firestore answers an exhausted quota with a status rather than an error, and
+ * a limiter that only watched for thrown exceptions would keep cheerfully
+ * spending against a door that is already shut.
+ */
 export async function authedFetch(
   url: string,
   init: RequestInit = {},
@@ -165,7 +180,12 @@ export async function authedFetch(
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
   if (init.body) headers.set("Content-Type", "application/json");
-  return fetch(url, { ...init, headers });
+
+  return await spend("firestore", async () => {
+    const res = await fetch(url, { ...init, headers });
+    if (res.status === 429) recordRefusal("firestore");
+    return res;
+  });
 }
 
 interface DocMeta<T> {

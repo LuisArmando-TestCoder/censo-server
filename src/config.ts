@@ -85,4 +85,26 @@ export const config = {
   // for hosts where an in-process timer will not survive. Blank keeps the
   // endpoint closed.
   lawSweepToken: Deno.env.get("LAW_SWEEP_TOKEN") ?? "",
+
+  // ── Daily budgets ──────────────────────────────────────────────────────────
+  // What the server may spend on metered services in one day, counted in calls
+  // and enforced in src/lib/budget.ts. These are our own ceilings, set below
+  // the real ones so that we stop before the provider does: reaching ours slows
+  // the crawler, whereas reaching Google's returns 429 to every reader on the
+  // site until midnight.
+
+  // Firestore's free tier allows 50,000 document reads a day. A page view costs
+  // several and a retry costs more, so the default leaves a wide margin between
+  // calls we count and reads Google counts.
+  budgetFirestorePerDay: int("BUDGET_FIRESTORE_PER_DAY", 30_000),
+  // Model calls. One law explained is one call, so this is how many laws can be
+  // summarised in a day — the largest real cost in the system.
+  budgetModelPerDay: int("BUDGET_MODEL_PER_DAY", 200),
+  // Requests to the Asamblea. Not a cost to us at all: a courtesy ceiling on
+  // how much of a public institution's server one crawler may occupy.
+  budgetAsambleaPerDay: int("BUDGET_ASAMBLEA_PER_DAY", 3_000),
+  // Where the day's counters live between restarts. A restart does not give the
+  // quota back, so this file is what stops a crash loop from re-spending the
+  // same allowance every time it comes up.
+  budgetStatePath: Deno.env.get("BUDGET_STATE_PATH") || "./.budget.json",
 } as const;

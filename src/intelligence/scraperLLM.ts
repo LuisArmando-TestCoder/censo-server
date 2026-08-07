@@ -11,6 +11,7 @@
 
 import { Browser, Builder, By, until, type WebElement } from "selenium-webdriver";
 import { Options } from "selenium-webdriver/chrome";
+import { BudgetExhausted, spend } from "../lib/budget.ts";
 
 export type Role = "system" | "user" | "assistant";
 
@@ -194,8 +195,18 @@ export async function ask(prompt: string, opts: CallOptions = {}): Promise<strin
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await askOnce(prompt);
+        // Metered per attempt, not per call: every retry reopens the browser
+        // and asks the model again, so three attempts are three visits however
+        // they look to the caller. Counting the outer call once would let a
+        // flapping session spend four times what the budget believes.
+        return await spend("model", () => askOnce(prompt));
       } catch (err) {
+        // The one failure not worth retrying. Being out of budget is a decision
+        // this process already made, so trying again immediately would just
+        // spend three attempts rediscovering it — and if the refusal is a
+        // backoff, retrying is precisely what the backoff exists to prevent.
+        if (err instanceof BudgetExhausted) throw err;
+
         lastError = err;
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[llm] attempt ${attempt + 1} of ${retries + 1} failed: ${message}`);

@@ -11,6 +11,7 @@
 
 import { fsCreate, fsIncrement, fsList, fsUpdate } from "./firestore.ts";
 import { randomId } from "../lib/validate.ts";
+import { publish, subjectFromDoc } from "../lib/events.ts";
 
 import type { Comment, CommentTone, CommentView } from "../types.ts";
 
@@ -49,6 +50,21 @@ export async function addComment(
   };
   await fsCreate(parent.col, id, comment as unknown as Record<string, unknown>);
   await fsIncrement(parent.doc, { commentCount: 1 });
+
+  // The comment goes out in the form a stranger may see, which for anything
+  // marked controversial means its words are withheld and only the fact of it
+  // travels. Broadcasting the text and letting each client decide whether to
+  // render it would put those words on every open connection, where a blur is
+  // the only thing standing between them and a reader we deliberately gated.
+  const subject = subjectFromDoc(parent.doc);
+  if (subject) {
+    publish({
+      ...subject,
+      deltas: { commentCount: 1 },
+      comment: viewComments([comment], null)[0],
+    });
+  }
+
   return comment;
 }
 

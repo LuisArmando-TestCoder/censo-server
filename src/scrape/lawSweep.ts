@@ -38,6 +38,7 @@ import {
 } from "./consultaLey.ts";
 import { docxToText, lawTextToMarkdown, looksLikeDocx } from "../lib/docx.ts";
 import { explainLaw, lawSummaryIssues } from "../intelligence/lawAgent.ts";
+import { BudgetExhausted } from "../lib/budget.ts";
 import { bytes as humanBytes, sweepLog, Trace } from "../lib/trace.ts";
 import type { Law } from "../types.ts";
 
@@ -309,6 +310,15 @@ export async function summariseLaw(
     trace.done("ready", `"${(summary.headline || detail.title).slice(0, 60)}"`);
     return "ready";
   } catch (err) {
+    // A law we ran out of budget for has nothing wrong with it, and marking it
+    // failed would be a lie that outlives the day: the queue reads that status,
+    // so one exhausted afternoon would push good laws to the back of the line
+    // for good. It is left exactly as it was and rethrown, to stop the batch.
+    if (err instanceof BudgetExhausted) {
+      trace.done("pausado", err.message);
+      throw err;
+    }
+
     await updateLaw(id, { status: "failed", lastError: errorText(err) });
     trace.failed("resumir", err);
     return "failed";
@@ -323,7 +333,19 @@ export async function summariseOnDemand(number: number): Promise<Law | null> {
   const existing = await getLaw(String(number));
   if (!existing) return null;
   if (existing.status === "ready" || existing.status === "no_text") return existing;
-  await summariseLaw(number);
+
+  // A reader is waiting, so running out of budget must not become a 503 on a
+  // law we already hold. They get the catalogued record — number, title, dates,
+  // and the link to the Asamblea — which is less than we would like to show and
+  // considerably more than an error page.
+  try {
+    await summariseLaw(number);
+  } catch (err) {
+    if (!(err instanceof BudgetExhausted)) throw err;
+    sweepLog(`explicación en vivo de ${number} pospuesta: ${err.message}`);
+    return existing;
+  }
+
   return await getLaw(String(number));
 }
 
@@ -372,6 +394,15 @@ async function phase<T>(name: string, run: () => Promise<T>, fallback: T): Promi
     sweepLog(`${name} ok en ${Math.round(performance.now() - startedAt)}ms`);
     return result;
   } catch (err) {
+    // Running out of the day's allowance is not a failure of this phase, it is
+    // the limiter doing its job, so it is reported as a stop rather than as an
+    // error. Logging it as a fault would train whoever reads these logs to
+    // ignore the line that actually means something is broken.
+    if (err instanceof BudgetExhausted) {
+      sweepLog(`${name} se detuvo: ${err.message}`);
+      return fallback;
+    }
+
     // Timed even when it fails: how long a phase ran before giving up separates
     // "the site refused us immediately" from "it hung until the timeout".
     console.error(

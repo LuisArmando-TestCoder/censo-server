@@ -12,3 +12,7 @@ node_modules
 # Chrome profile holding the crawler's Google session. Never commit: it is a
 # live credential.
 .chrome/
+
+# Today's spending counters. Machine-local state, not configuration: committing
+# it would hand every deployment a copy of one machine's afternoon.
+.budget.json

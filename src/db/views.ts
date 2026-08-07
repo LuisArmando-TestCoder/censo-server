@@ -13,8 +13,15 @@
 // approximate number as an audience.
 
 import { fsIncrement } from "./firestore.ts";
+import { publish, subjectFromDoc } from "../lib/events.ts";
 
-/** Records one arrival. */
+/** Records one arrival, and tells anyone watching. */
 export async function recordView(doc: string): Promise<void> {
   await fsIncrement(doc, { viewCount: 1 });
+
+  // Announced from here rather than from the route, so that every path which
+  // records a view — this one, and any added later — is live without having to
+  // remember to be.
+  const subject = subjectFromDoc(doc);
+  if (subject) publish({ ...subject, deltas: { viewCount: 1 } });
 }

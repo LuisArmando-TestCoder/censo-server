@@ -17,6 +17,7 @@ import {
 // Namespaced because `comments` is also a natural local name for a list of
 // them, and one of those shadowing the other reads as a bug.
 import * as thread from "./comments.ts";
+import { publish } from "../lib/events.ts";
 import {
   COL,
   commentsCol,
@@ -176,7 +177,12 @@ export async function setReaction(
   const deltas: Record<string, number> = {};
   if (result.likeDelta) deltas.likeCount = result.likeDelta;
   if (result.dislikeDelta) deltas.dislikeCount = result.dislikeDelta;
-  if (Object.keys(deltas).length) await fsIncrement(postDoc(postId), deltas);
+  if (Object.keys(deltas).length) {
+    await fsIncrement(postDoc(postId), deltas);
+    // Only the deltas travel, so a reader who is looking at this note sees the
+    // bar move by exactly what changed, without anyone re-reading the document.
+    publish({ kind: "post", id: postId, deltas });
+  }
 
   return result;
 }

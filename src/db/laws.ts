@@ -20,6 +20,7 @@ import {
 import { COL, crawlStateDoc, lawDoc, lawReactionDoc } from "./paths.ts";
 import type { Law, LawCrawlState, LawStatus, Reaction, ReactionKind } from "../types.ts";
 import type { ReactionResult } from "./posts.ts";
+import { publish } from "../lib/events.ts";
 
 export async function getLaw(number: string): Promise<Law | null> {
   return await fsGet<Law>(lawDoc(number));
@@ -226,7 +227,10 @@ export async function setLawReaction(
   const deltas: Record<string, number> = {};
   if (result.likeDelta) deltas.likeCount = result.likeDelta;
   if (result.dislikeDelta) deltas.dislikeCount = result.dislikeDelta;
-  if (Object.keys(deltas).length) await fsIncrement(lawDoc(number), deltas);
+  if (Object.keys(deltas).length) {
+    await fsIncrement(lawDoc(number), deltas);
+    publish({ kind: "law", id: number, deltas });
+  }
 
   return result;
 }

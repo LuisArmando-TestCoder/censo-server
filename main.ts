@@ -25,7 +25,10 @@ import { seedLegalDocs } from "./src/db/legal.ts";
 import { sweepAll } from "./src/scrape/sweep.ts";
 import { listPendingRawItems } from "./src/db/rawItems.ts";
 import { runPipeline } from "./src/intelligence/pipeline.ts";
+import liveRouter from "./src/routes/live.ts";
 import { sweepLaws } from "./src/scrape/lawSweep.ts";
+import { asBackground, BudgetExhausted, budgetReport } from "./src/lib/budget.ts";
+import { listenerCount } from "./src/lib/events.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -51,18 +54,46 @@ app.use("*", async (c, next) => {
 
 app.get("/", (c) => c.json({ service: "censo-api", ok: true }));
 
+/**
+ * What the server has spent today.
+ *
+ * Public and unauthenticated because it says nothing private — three counters
+ * and three ceilings — and because the moment it is worth reading is the moment
+ * something is wrong, which is exactly when nobody wants to hunt for a token.
+ */
+app.get(
+  "/api/health",
+  (c) => c.json({ ok: true, listeners: listenerCount(), budget: budgetReport() }),
+);
+
 app.route("/api/auth", authRouter);
 app.route("/api/posts", postsRouter);
 app.route("/api/quiz", quizRouter);
 app.route("/api/legal", legalRouter);
 app.route("/api/laws", lawsRouter);
 app.route("/api/admin", adminRouter);
+app.route("/api/live", liveRouter);
 
 // One shape for every error, with CORS headers set explicitly so the browser
 // can actually read a 401 or a 500 rather than seeing an opaque failure.
 app.onError((err, c) => {
   c.header("Access-Control-Allow-Origin", "*");
   if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+
+  // Being out of budget is not a bug and must not read like one. It gets a 503
+  // with the honest reason and a Retry-After, so a browser, a proxy and a person
+  // are all told the same thing: this works again later, and roughly when.
+  if (err instanceof BudgetExhausted) {
+    const seconds = Math.max(1, Math.ceil((err.retryAt - Date.now()) / 1000));
+    c.header("Retry-After", String(seconds));
+    console.warn(`[budget] rechazado (${err.resource}/${err.reason}): ${err.message}`);
+    return c.json({
+      error: "El sitio alcanzó su límite diario de consultas. Vuelva a intentarlo más tarde.",
+      resource: err.resource,
+      retryAfterSec: seconds,
+    }, 503);
+  }
+
   console.error("[unhandled]", err);
   return c.json({ error: "Something went wrong on our side." }, 500);
 });
@@ -103,16 +134,20 @@ async function seed(): Promise<void> {
  */
 async function pipelineTick(): Promise<void> {
   try {
-    const reports = await sweepAll();
+    const reports = await asBackground(sweepAll);
     const found = reports.reduce((n, r) => n + r.created + r.changed, 0);
     if (found) console.log(`[sweep] ${found} new or changed item(s)`);
 
-    const pending = await listPendingRawItems(5);
+    const pending = await asBackground(() => listPendingRawItems(5));
     for (const item of pending) {
-      const result = await runPipeline(item);
+      const result = await asBackground(() => runPipeline(item));
       console.log(`[pipeline] ${item.id}: ${result.verdict} — ${result.note}`);
     }
   } catch (err) {
+    if (err instanceof BudgetExhausted) {
+      console.log(`[pipeline] pausado: ${err.message}`);
+      return;
+    }
     console.error("[pipeline] tick failed", err);
   }
 }
@@ -125,7 +160,7 @@ async function pipelineTick(): Promise<void> {
  */
 async function lawTick(): Promise<void> {
   try {
-    const r = await sweepLaws();
+    const r = await asBackground(sweepLaws);
     if (r.catalogued || r.summarised || r.withoutText || r.failed) {
       console.log(
         `[laws] +${r.catalogued} catalogued, ${r.summarised} explained, ` +
@@ -134,6 +169,12 @@ async function lawTick(): Promise<void> {
       );
     }
   } catch (err) {
+    // Reaching the day's allowance is the system working, not failing: the
+    // crawler is meant to yield to readers. One calm line, not a stack trace.
+    if (err instanceof BudgetExhausted) {
+      console.log(`[laws] pausado: ${err.message}`);
+      return;
+    }
     console.error("[laws] tick failed", err);
   }
 }

@@ -21,6 +21,7 @@
 // grid and the detail tables are in the HTML the server sends.
 
 import { config } from "../config.ts";
+import { BudgetExhausted, spend } from "../lib/budget.ts";
 import { bytes as humanBytes, Trace } from "../lib/trace.ts";
 import type { LawAffectation } from "../types.ts";
 
@@ -163,19 +164,29 @@ async function request(
     headers["Origin"] = new URL(FORM_URL).origin;
   }
 
+  // Resolved once, outside the loop: the client is a cached singleton, and
+  // reaching for it inside the metered closure only forced that closure to be
+  // async for a value that never changes between attempts.
+  const http = await client();
+
   let lastError: unknown;
   for (let attempt = 1; attempt <= REQUEST_ATTEMPTS; attempt++) {
     try {
       // The body is rebuilt per attempt: a URLSearchParams is consumed once it
       // has been sent, so reusing it would post an empty form on the retry.
       const startedAt = performance.now();
-      const response = await fetch(FORM_URL, {
-        method: body ? "POST" : "GET",
-        headers,
-        body: body ? new URLSearchParams(body) : undefined,
-        client: await client(),
-        signal: AbortSignal.timeout(config.lawRequestTimeoutMs),
-      });
+      // Metered here rather than around the retry loop so that each attempt
+      // counts as the request it is, and so the limiter's own spacing applies
+      // between attempts as well as between laws. The Asamblea cannot tell a
+      // retry from a first try, and neither should our ceiling.
+      const response = await spend("asamblea", () =>
+        fetch(FORM_URL, {
+          method: body ? "POST" : "GET",
+          headers,
+          body: body ? new URLSearchParams(body) : undefined,
+          client: http,
+          signal: AbortSignal.timeout(config.lawRequestTimeoutMs),
+        }));
 
       // The round trip is timed on every request because latency here is the
       // early warning for the timeouts that used to end a whole sweep: a site
@@ -185,6 +196,9 @@ async function request(
       return { response, cookie: mergeCookies(session?.cookie ?? "", response.headers) };
     } catch (err) {
       lastError = err;
+      // Running out of the day's courtesy allowance is a decision, not a fault:
+      // retrying it would spend three attempts to be told the same thing.
+      if (err instanceof BudgetExhausted) throw err;
       if (!isTransient(err)) throw err;
 
       // Out of attempts. A bare "aborted due to timeout" sends whoever reads

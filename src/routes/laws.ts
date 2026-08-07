@@ -24,6 +24,7 @@ import { recordView } from "../db/views.ts";
 import { commentViewer, postComment } from "./commentFlow.ts";
 
 import { config } from "../config.ts";
+import { asBackground } from "../lib/budget.ts";
 import type { Law, ReactionKind } from "../types.ts";
 
 const laws = new Hono<AppEnv>();
@@ -262,7 +263,11 @@ laws.post("/sweep", async (c) => {
   // on an empty token is: a missing header must never match.
   if (!offered || offered !== token) fail(401, "Token inválido.");
 
-  const report = await sweepLaws();
+  // Marked as background even though it arrived as a request: what matters to
+  // the budget is the nature of the work, not how it was triggered. A scheduler
+  // crawling eleven thousand laws must yield to readers exactly as the internal
+  // timer does, or this endpoint becomes the hole in the reservation.
+  const report = await asBackground(sweepLaws);
   console.log(
     `[laws] sweep on demand: +${report.catalogued} catalogued, ` +
       `${report.summarised} explained, ${report.failed} failed`,
