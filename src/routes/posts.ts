@@ -57,10 +57,10 @@ function publicPost(post: Post, visibleFieldIds: Set<string>) {
     origin: post.origin,
     sourceUrls: post.sourceUrls,
     citations: post.citations ?? [],
-    likeCount: post.likeCount,
-    dislikeCount: post.dislikeCount,
-    commentCount: post.commentCount,
-    viewCount: post.viewCount ?? 0,
+    likeCount: Math.max(0, post.likeCount ?? 0),
+    dislikeCount: Math.max(0, post.dislikeCount ?? 0),
+    commentCount: Math.max(0, post.commentCount ?? 0),
+    viewCount: Math.max(0, post.viewCount ?? 0),
     publishedAt: post.publishedAt,
   };
 }
@@ -142,8 +142,8 @@ posts.post("/:id/reaction", requireAuth, async (c) => {
 
   return c.json({
     myReaction: result.kind,
-    likeCount: fresh?.likeCount ?? 0,
-    dislikeCount: fresh?.dislikeCount ?? 0,
+    likeCount: Math.max(0, fresh?.likeCount ?? 0),
+    dislikeCount: Math.max(0, fresh?.dislikeCount ?? 0),
   });
 });
 

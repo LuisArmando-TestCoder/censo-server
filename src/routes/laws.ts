@@ -224,16 +224,20 @@ laws.post("/:number/reaction", requireAuth, async (c) => {
   const kind = requireOneOf(body.kind, REACTION_KINDS, "kind") as ReactionKind;
 
   // setLawReaction persists the user vote AND recounts total votes directly from the reactions collection/table
-  const { myReaction, likeCount, dislikeCount } = await setLawReaction(
+  const result = await setLawReaction(
     String(number),
     user.id,
     kind
   );
 
+  // Re-fetch the law to get the updated counters since ReactionResult 
+  // does not return them.
+  const fresh = await getLaw(String(number));
+
   return c.json({
-    myReaction,
-    likeCount,
-    dislikeCount,
+    myReaction: result.kind,
+    likeCount: fresh?.likeCount ?? 0,
+    dislikeCount: fresh?.dislikeCount ?? 0,
   });
 });
 
