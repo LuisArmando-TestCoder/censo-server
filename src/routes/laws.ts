@@ -160,27 +160,35 @@ laws.get("/highlights", optionalAuth, async (c) => {
  */
 laws.get("/:number", optionalAuth, async (c) => {
   const number = readNumber(c.req.param("number"));
+  const numberStr = String(number);
+  const user = c.get("user");
 
-  let law = await getLaw(String(number));
+  // FIRE ALL QUERIES CONCURRENTLY AT THE VERY TOP
+  // We don't wait for the law to come back before asking the database for comments and reactions.
+  const lawPromise = getLaw(numberStr);
+  const minePromise = user 
+    ? lawReactionsForUser([numberStr], user.id) 
+    : Promise.resolve({} as Record<string, any>);
+  const threadPromise = listComments(lawCommentParent(numberStr));
+  const viewerPromise = commentViewer(user ?? null);
+
+  // Now we await the law
+  let law = await lawPromise;
   if (!law) fail(404, "Esa ley no existe.");
 
-  if (law!.status === "catalogued" && config.lawsEnabled) {
+  // If we need to summarize, the LLM will block, but at least our DB queries are already done/running
+  if (law.status === "catalogued" && config.lawsEnabled) {
     law = (await summariseOnDemand(number)) ?? law;
   }
 
-  const user = c.get("user");
-  
-  // FIX: Run independent database queries concurrently instead of sequentially
-  // This cuts down the total wait time by running these two network trips in parallel.
-  const [mine, thread, viewer] = await Promise.all([
-    user ? lawReactionsForUser([String(number)], user.id) : Promise.resolve({} as Record<string, any>),
-    listComments(lawCommentParent(String(number))),
-    commentViewer(user ?? null)
-  ]);
+  // Await the remaining background queries (which are likely already finished by now)
+  const mine = await minePromise;
+  const thread = await threadPromise;
+  const viewer = await viewerPromise;
 
   return c.json({
-    law: publicLaw(law!),
-    myReaction: mine[String(number)] ?? null,
+    law: publicLaw(law),
+    myReaction: mine[numberStr] ?? null,
     comments: viewComments(thread, viewer),
   });
 });
