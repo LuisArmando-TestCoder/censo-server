@@ -45,6 +45,10 @@ function human(ms: number): string {
   return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const startedAt = Date.now();
 console.log(`
 El Censo — notas
@@ -104,6 +108,12 @@ try {
     }
 
     if (once) break;
+
+    // Rest for a few seconds before the next loop pass to protect against 429 rate limits
+    if (!stopping) {
+      console.log("  Pausando 5 segundos antes de la siguiente vuelta...");
+      await sleep(5000);
+    }
   }
 } finally {
   // The browser is a real process; leaving it behind would hold the profile

@@ -18,6 +18,7 @@
     "verify:api": "deno run --allow-net --allow-env --allow-read --env-file scripts/verify-api.ts",
     "verify:moderation": "deno run --allow-env --allow-read --env-file scripts/verify-moderation.ts",
     "verify:budget": "deno run --allow-env --allow-read --allow-write scripts/verify-budget.ts",
+    "verify:live": "deno run --allow-net --allow-env --allow-read scripts/verify-live.ts",
     "pipeline": "deno run --allow-net --allow-env --allow-read --allow-run --allow-sys --env-file scripts/run-pipeline.ts",
     "publish": "deno run --allow-net --allow-env --allow-read --env-file scripts/publish.ts"
   },
