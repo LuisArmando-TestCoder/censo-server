@@ -21,6 +21,10 @@ async function serviceAccount(): Promise<ServiceAccount> {
   return _sa!;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ── OAuth access token ────────────────────────────────────────────────────────
 
 function b64url(bytes: Uint8Array): string {
@@ -159,33 +163,68 @@ export async function databaseResourceName(): Promise<string> {
 /**
  * Every read and every write in the system goes through here.
  *
- * That is what makes it the right place for the budget: one function to count,
- * with no way for a repository to reach Firestore around it. The token exchange
- * is deliberately outside the accounting — it is Google's OAuth endpoint, not
- * the database, it is cached for an hour, and counting it would make the number
- * mean something other than "documents we touched".
- *
- * A 429 is reported to the limiter rather than merely returned, because
- * Firestore answers an exhausted quota with a status rather than an error, and
- * a limiter that only watched for thrown exceptions would keep cheerfully
- * spending against a door that is already shut.
+ * Includes automatic backoff retries when encountering Firestore 429 status
+ * codes or budget control rate-limit refusals.
  */
 export async function authedFetch(
   url: string,
   init: RequestInit = {},
   scope: string = SCOPE_DATASTORE,
+  maxRetries = 6,
 ): Promise<Response> {
-  const token = await accessToken(scope);
+  let delayMs = 3000;
 
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
-  if (init.body) headers.set("Content-Type", "application/json");
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const token = await accessToken(scope);
 
-  return await spend("firestore", async () => {
-    const res = await fetch(url, { ...init, headers });
-    if (res.status === 429) recordRefusal("firestore");
-    return res;
-  });
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${token}`);
+      if (init.body) headers.set("Content-Type", "application/json");
+
+      const res = await spend("firestore", async () => {
+        const r = await fetch(url, { ...init, headers });
+        if (r.status === 429) recordRefusal("firestore");
+        return r;
+      });
+
+      if (res.status === 429 && attempt < maxRetries) {
+        console.warn(
+          `[budget] Firestore 429 (Límite de tasa). Pausando ${Math.round(
+            delayMs / 1000,
+          )}s antes del reintento ${attempt}/${maxRetries}…`,
+        );
+        await sleep(delayMs);
+        delayMs = Math.min(delayMs * 2, 60000);
+        continue;
+      }
+
+      return res;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isQuotaOrBudgetError =
+        msg.includes("429") ||
+        msg.includes("RESOURCE_EXHAUSTED") ||
+        msg.includes("Quota exceeded") ||
+        msg.includes("rechazó") ||
+        msg.includes("esperando");
+
+      if (isQuotaOrBudgetError && attempt < maxRetries) {
+        console.warn(
+          `[budget] Pausa por control de cuota/presupuesto. Esperando ${Math.round(
+            delayMs / 1000,
+          )}s antes de reintentar (${attempt}/${maxRetries})…`,
+        );
+        await sleep(delayMs);
+        delayMs = Math.min(delayMs * 2, 60000);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw new Error(`authedFetch falló tras ${maxRetries} reintentos por límites de Firestore.`);
 }
 
 interface DocMeta<T> {
@@ -467,7 +506,6 @@ export async function fsQuerySorted<T>(
 }
 
 /** Number of documents matching a query, without transferring their contents. */
-
 export async function fsCount(collectionId: string, where: QueryFilter[] = []): Promise<number> {
   const body = {
     structuredAggregationQuery: {
