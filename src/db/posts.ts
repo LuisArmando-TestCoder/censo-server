@@ -4,9 +4,9 @@
 // derivative maintained with atomic increments, never a read-modify-write.
 
 import {
+  fsCount,
   fsDelete,
   fsGet,
-  fsIncrement,
   fsList,
   fsQuery,
   fsQuerySorted,
@@ -174,11 +174,18 @@ export async function setReaction(
     };
   }
 
+  // Recount on write to prevent drift
+  const [likeCount, dislikeCount] = await Promise.all([
+    fsCount(reactionsCol(postId), [{ field: "kind", op: "EQUAL", value: "like" }]),
+    fsCount(reactionsCol(postId), [{ field: "kind", op: "EQUAL", value: "dislike" }]),
+  ]);
+
+  await fsUpdate(postDoc(postId), { likeCount, dislikeCount });
+  
   const deltas: Record<string, number> = {};
   if (result.likeDelta) deltas.likeCount = result.likeDelta;
   if (result.dislikeDelta) deltas.dislikeCount = result.dislikeDelta;
   if (Object.keys(deltas).length) {
-    await fsIncrement(postDoc(postId), deltas);
     // Only the deltas travel, so a reader who is looking at this note sees the
     // bar move by exactly what changed, without anyone re-reading the document.
     publish({ kind: "post", id: postId, deltas });

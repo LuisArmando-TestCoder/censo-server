@@ -231,7 +231,13 @@ export async function setLawReaction(
   ]);
 
   await fsUpdate(lawDoc(number), { likeCount, dislikeCount });
-  publish({ kind: "law", id: number, deltas: { likeCount, dislikeCount } });
+  
+  const deltas: Record<string, number> = {};
+  if (result.likeDelta) deltas.likeCount = result.likeDelta;
+  if (result.dislikeDelta) deltas.dislikeCount = result.dislikeDelta;
+  if (Object.keys(deltas).length) {
+    publish({ kind: "law", id: number, deltas });
+  }
 
   return result;
 }
