@@ -8,16 +8,16 @@
 // with the totals kept by atomic increment. See db/posts.ts for the reasoning.
 
 import {
+  fsCount,
   fsCreate,
   fsDelete,
   fsGet,
-  fsIncrement,
   fsQuery,
   fsQuerySorted,
   fsSet,
   fsUpdate,
 } from "./firestore.ts";
-import { COL, crawlStateDoc, lawDoc, lawReactionDoc } from "./paths.ts";
+import { COL, crawlStateDoc, lawDoc, lawReactionDoc, lawReactionsCol } from "./paths.ts";
 import type { Law, LawCrawlState, LawStatus, Reaction, ReactionKind } from "../types.ts";
 import type { ReactionResult } from "./posts.ts";
 import { publish } from "../lib/events.ts";
@@ -224,13 +224,14 @@ export async function setLawReaction(
     };
   }
 
-  const deltas: Record<string, number> = {};
-  if (result.likeDelta) deltas.likeCount = result.likeDelta;
-  if (result.dislikeDelta) deltas.dislikeCount = result.dislikeDelta;
-  if (Object.keys(deltas).length) {
-    await fsIncrement(lawDoc(number), deltas);
-    publish({ kind: "law", id: number, deltas });
-  }
+  // Recount on write to prevent drift
+  const [likeCount, dislikeCount] = await Promise.all([
+    fsCount(lawReactionsCol(number), [{ field: "kind", op: "EQUAL", value: "like" }]),
+    fsCount(lawReactionsCol(number), [{ field: "kind", op: "EQUAL", value: "dislike" }]),
+  ]);
+
+  await fsUpdate(lawDoc(number), { likeCount, dislikeCount });
+  publish({ kind: "law", id: number, deltas: { likeCount, dislikeCount } });
 
   return result;
 }

@@ -14,6 +14,7 @@ import {
   getLaw,
   lawReactionsForUser,
   listReadyLaws,
+  reseedLawReactions,
   searchLaws,
   setLawReaction,
 } from "../db/laws.ts";
@@ -64,10 +65,10 @@ function publicLaw(law: Law) {
     affectations: law.affectations ?? [],
     flags: law.flags ?? [],
     status: law.status,
-    likeCount: law.likeCount,
-    dislikeCount: law.dislikeCount,
-    commentCount: law.commentCount ?? 0,
-    viewCount: law.viewCount ?? 0,
+    likeCount: Math.max(0, law.likeCount ?? 0),
+    dislikeCount: Math.max(0, law.dislikeCount ?? 0),
+    commentCount: Math.max(0, law.commentCount ?? 0),
+    viewCount: Math.max(0, law.viewCount ?? 0),
   };
 }
 
@@ -100,10 +101,10 @@ function lawCard(law: Law) {
     status: law.status,
     flagCount: flags.length,
     flagSeverity: severity,
-    likeCount: law.likeCount,
-    dislikeCount: law.dislikeCount,
-    commentCount: law.commentCount ?? 0,
-    viewCount: law.viewCount ?? 0,
+    likeCount: Math.max(0, law.likeCount ?? 0),
+    dislikeCount: Math.max(0, law.dislikeCount ?? 0),
+    commentCount: Math.max(0, law.commentCount ?? 0),
+    viewCount: Math.max(0, law.viewCount ?? 0),
   };
 }
 
@@ -164,10 +165,9 @@ laws.get("/:number", optionalAuth, async (c) => {
   const user = c.get("user");
 
   // FIRE ALL QUERIES CONCURRENTLY AT THE VERY TOP
-  // We don't wait for the law to come back before asking the database for comments and reactions.
   const lawPromise = getLaw(numberStr);
-  const minePromise = user 
-    ? lawReactionsForUser([numberStr], user.id) 
+  const minePromise = user
+    ? lawReactionsForUser([numberStr], user.id)
     : Promise.resolve({} as Record<string, any>);
   const threadPromise = listComments(lawCommentParent(numberStr));
   const viewerPromise = commentViewer(user ?? null);
@@ -195,27 +195,16 @@ laws.get("/:number", optionalAuth, async (c) => {
 
 /**
  * POST /:number/comments — say something about a law.
- *
- * Every rule about who may comment and what survives screening lives in
- * commentFlow, shared with notes. A law only has to exist to be discussed: a
- * catalogued one whose explanation has not been written yet is still a real law
- * that a person may have an opinion about, and refusing them would be refusing
- * the very thing the site is for.
  */
 laws.post("/:number/comments", requireAuth, async (c) => {
   const number = readNumber(c.req.param("number"));
-  if (!await getLaw(String(number))) fail(404, "Esa ley no existe.");
+  if (!(await getLaw(String(number)))) fail(404, "Esa ley no existe.");
 
   return await postComment(c, lawCommentParent(String(number)));
 });
 
 /**
  * POST /:number/view — one person opened this law.
- *
- * Open to anyone, because most readers have no account and counting only the
- * signed-in ones would report a number that means something quite different
- * from what it says. Failing quietly: a lost count is not worth an error
- * message over somebody's reading.
  */
 laws.post("/:number/view", async (c) => {
   const number = readNumber(c.req.param("number"));
@@ -234,53 +223,66 @@ laws.post("/:number/reaction", requireAuth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const kind = requireOneOf(body.kind, REACTION_KINDS, "kind") as ReactionKind;
 
-  const result = await setLawReaction(String(number), user.id, kind);
-  const fresh = await getLaw(String(number));
+  // setLawReaction persists the user vote AND recounts total votes directly from the reactions collection/table
+  const { myReaction, likeCount, dislikeCount } = await setLawReaction(
+    String(number),
+    user.id,
+    kind
+  );
 
   return c.json({
-    myReaction: result.kind,
-    likeCount: fresh?.likeCount ?? 0,
-    dislikeCount: fresh?.dislikeCount ?? 0,
+    myReaction,
+    likeCount,
+    dislikeCount,
+  });
+});
+
+/**
+ * POST /reseed — Recalculates and repairs reaction counts directly from individual reaction entries.
+ *
+ * Can target a single law via `?number=10964` or reseed all laws if omitted.
+ * Guarded by LAW_SWEEP_TOKEN.
+ */
+laws.post("/reseed", async (c) => {
+  const token = config.lawSweepToken;
+  if (!token) fail(404, "No existe esa ruta.");
+
+  const offered =
+    c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ??
+    c.req.header("x-sweep-token") ??
+    "";
+
+  if (!offered || offered !== token) fail(401, "Token inválido.");
+
+  const rawNumber = c.req.query("number");
+  const lawNumber = rawNumber ? String(readNumber(rawNumber)) : undefined;
+
+  const reseededCount = await reseedLawReactions(lawNumber);
+
+  return c.json({
+    ok: true,
+    reseededCount,
   });
 });
 
 /**
  * POST /sweep — runs one pass of the crawler on demand.
- *
- * The in-process timer only exists while the process does. On a host that
- * sleeps an idle container, recycles it between deploys, or runs more than one
- * instance, that timer is either dead or duplicated. This endpoint is the way
- * out: point any external scheduler at it and the catalogue advances on a clock
- * that does not depend on ours.
- *
- * It is guarded by a shared secret rather than a session, because the caller is
- * a machine with no account. Without LAW_SWEEP_TOKEN set the route stays shut —
- * an unauthenticated endpoint that makes the server crawl another site on
- * request is a way to be used as a weapon against the Asamblea.
- *
- * The work is awaited rather than backgrounded so the scheduler's own log shows
- * what happened, and so a host that freezes the process after the response
- * cannot cut a sweep in half.
  */
 laws.post("/sweep", async (c) => {
   const token = config.lawSweepToken;
   if (!token) fail(404, "No existe esa ruta.");
 
-  const offered = c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ??
-    c.req.header("x-sweep-token") ?? "";
+  const offered =
+    c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ??
+    c.req.header("x-sweep-token") ??
+    "";
 
-  // Length-independent comparison is not worth the ceremony here, but bailing
-  // on an empty token is: a missing header must never match.
   if (!offered || offered !== token) fail(401, "Token inválido.");
 
-  // Marked as background even though it arrived as a request: what matters to
-  // the budget is the nature of the work, not how it was triggered. A scheduler
-  // crawling eleven thousand laws must yield to readers exactly as the internal
-  // timer does, or this endpoint becomes the hole in the reservation.
   const report = await asBackground(sweepLaws);
   console.log(
     `[laws] sweep on demand: +${report.catalogued} catalogued, ` +
-      `${report.summarised} explained, ${report.failed} failed`,
+      `${report.summarised} explained, ${report.failed} failed`
   );
   return c.json(report);
 });
