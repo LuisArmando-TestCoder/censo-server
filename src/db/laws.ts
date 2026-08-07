@@ -281,3 +281,35 @@ export async function getCrawlState(): Promise<LawCrawlState> {
 export async function updateCrawlState(patch: Partial<LawCrawlState>): Promise<void> {
   await fsUpdate(crawlStateDoc(CRAWL_ID), patch as Record<string, unknown>);
 }
+
+/**
+ * Recalculates and repairs reaction counts directly from individual reaction entries.
+ * Can target a single law or reseed all laws if omitted.
+ */
+export async function reseedLawReactions(number?: string): Promise<number> {
+  if (number) {
+    const [likeCount, dislikeCount] = await Promise.all([
+      fsCount(lawReactionsCol(number), [{ field: "kind", op: "EQUAL", value: "like" }]),
+      fsCount(lawReactionsCol(number), [{ field: "kind", op: "EQUAL", value: "dislike" }]),
+    ]);
+    await fsUpdate(lawDoc(number), { likeCount, dislikeCount });
+    return 1;
+  }
+
+  const laws = await fsQuery<Law>(COL.laws, { limit: 20000 });
+  let count = 0;
+  
+  for (const law of laws) {
+    const [likeCount, dislikeCount] = await Promise.all([
+      fsCount(lawReactionsCol(law.id), [{ field: "kind", op: "EQUAL", value: "like" }]),
+      fsCount(lawReactionsCol(law.id), [{ field: "kind", op: "EQUAL", value: "dislike" }]),
+    ]);
+    
+    if (law.likeCount !== likeCount || law.dislikeCount !== dislikeCount) {
+      await fsUpdate(lawDoc(law.id), { likeCount, dislikeCount });
+      count++;
+    }
+  }
+  
+  return count;
+}
