@@ -135,15 +135,11 @@ posts.post("/:id/reaction", requireAuth, async (c) => {
   const kind = requireOneOf(body.kind, REACTION_KINDS, "kind") as ReactionKind;
 
   const result = await setReaction(postId, user.id, kind);
-  
-  // Re-fetch the post to get the updated counters since ReactionResult 
-  // does not return them.
-  const fresh = await getPost(postId);
 
   return c.json({
     myReaction: result.kind,
-    likeCount: Math.max(0, fresh?.likeCount ?? 0),
-    dislikeCount: Math.max(0, fresh?.dislikeCount ?? 0),
+    likeCount: Math.max(0, result.likeCount),
+    dislikeCount: Math.max(0, result.dislikeCount),
   });
 });
 

@@ -132,6 +132,8 @@ export interface ReactionResult {
   kind: ReactionKind | null; // where the user ended up; null means they undid it
   likeDelta: number;
   dislikeDelta: number;
+  likeCount: number;
+  dislikeCount: number;
 }
 
 /**
@@ -146,7 +148,7 @@ export async function setReaction(
 ): Promise<ReactionResult> {
   const existing = await getReaction(postId, userId);
 
-  let result: ReactionResult;
+  let result: Omit<ReactionResult, "likeCount" | "dislikeCount">;
   if (!existing) {
     await fsSet(reactionDoc(postId, userId), {
       userId,
@@ -191,7 +193,7 @@ export async function setReaction(
     publish({ kind: "post", id: postId, deltas });
   }
 
-  return result;
+  return { ...result, likeCount, dislikeCount };
 }
 
 /** Which posts, out of the given ids, this reader already voted on. */

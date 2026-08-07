@@ -230,14 +230,10 @@ laws.post("/:number/reaction", requireAuth, async (c) => {
     kind
   );
 
-  // Re-fetch the law to get the updated counters since ReactionResult 
-  // does not return them.
-  const fresh = await getLaw(String(number));
-
   return c.json({
     myReaction: result.kind,
-    likeCount: fresh?.likeCount ?? 0,
-    dislikeCount: fresh?.dislikeCount ?? 0,
+    likeCount: Math.max(0, result.likeCount),
+    dislikeCount: Math.max(0, result.dislikeCount),
   });
 });
 

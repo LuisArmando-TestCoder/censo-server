@@ -196,7 +196,7 @@ export async function setLawReaction(
 ): Promise<ReactionResult> {
   const existing = await getLawReaction(number, userId);
 
-  let result: ReactionResult;
+  let result: Omit<ReactionResult, "likeCount" | "dislikeCount">;
   if (!existing) {
     await fsSet(lawReactionDoc(number, userId), {
       userId,
@@ -239,7 +239,7 @@ export async function setLawReaction(
     publish({ kind: "law", id: number, deltas });
   }
 
-  return result;
+  return { ...result, likeCount, dislikeCount };
 }
 
 /** Which of the given laws this reader already voted on. */
